@@ -1,4 +1,4 @@
-module github.com/groovy-sky/knock2spot/Function
+module github.com/groovy-sky/knock2spot
 
 go 1.18
 

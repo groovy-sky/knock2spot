@@ -126,12 +126,11 @@ func whitelistipHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	client := networkClientFactory.NewSecurityRulesClient()
 
-	nsgRule, err := allowInbound(ctx, client, resourceGroup, resourceName, ruleName, "*", dstPort, "Tcp", ip, "*", int32(ruleNumber))
+	_, err = allowInbound(ctx, client, resourceGroup, resourceName, ruleName, "*", dstPort, "Tcp", ip, "*", int32(ruleNumber))
 	if err != nil {
 		log.Fatal(err)
 	}
-	fmt.Println(nsgRule)
-	w.Write([]byte(ip))
+	w.Write([]byte(""))
 }
 
 // Creates a new allow inbound security rule in NSG
@@ -179,7 +178,7 @@ func allowInbound(ctx context.Context, securityRulesClient *armnetwork.SecurityR
 	if err != nil {
 		return ok, fmt.Errorf("cannot get security rule create or update future response: %v", err)
 	}
-
+	log.Println("[INF] Successfully added ", srcIp, " to ", nsgName, " security rule ", ruleName)
 	return true, nil
 }
 

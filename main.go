@@ -151,7 +151,7 @@ func allowInbound(ctx context.Context, securityRulesClient *armnetwork.SecurityR
 	}
 	// Create or update the security rule
 	pollerResp, err := securityRulesClient.BeginCreateOrUpdate(ctx,
-		"sample-resources-group",
+		rgName,
 		nsgName,
 		ruleName,
 		armnetwork.SecurityRule{

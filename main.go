@@ -138,17 +138,25 @@ func allowInbound(ctx context.Context, securityRulesClient *armnetwork.SecurityR
 	log.Println("[INF] Trying to modify", nsgName, "security rule", ruleName)
 	var ok bool
 	// Check if rule already exists. If it does, appends the new source IP to the existing rule
-	securityRule, err := securityRulesClient.Get(ctx, rgName, nsgName, ruleName, nil)
+	securityRule, _ := securityRulesClient.Get(ctx, rgName, nsgName, ruleName, nil)
 
-	if err == nil && securityRule.Properties != nil && securityRule.Properties.SourceAddressPrefix != nil {
-		// Search if the IP is already in the rule
-		if strings.Contains(*securityRule.Properties.SourceAddressPrefix, srcIp) {
-			return true, nil
-		} else {
-			// If rule exists, append the new source IP to the existing rule
-			srcIp = *securityRule.Properties.SourceAddressPrefix + "," + srcIp
-		}
+	//Check if security rule exists and has one or multiple source IP addresses
+	var newIps []*string
+	var newIp *string
+
+	if securityRule.Properties != nil && securityRule.Properties.SourceAddressPrefix != nil {
+		newIps = append(newIps, securityRule.Properties.SourceAddressPrefix)
+	} else if securityRule.Properties != nil && securityRule.Properties.SourceAddressPrefixes != nil {
+		newIps = append(newIps, securityRule.Properties.SourceAddressPrefixes...)
 	}
+	newIps = append(newIps, &srcIp)
+
+	// If total number of source IP addresses is less than 2, then set source only to the new IP address
+	if len(newIps) <= 1 {
+		newIp = &srcIp
+		newIps = nil
+	}
+
 	// Create or update the security rule
 	pollerResp, err := securityRulesClient.BeginCreateOrUpdate(ctx,
 		rgName,
@@ -162,7 +170,8 @@ func allowInbound(ctx context.Context, securityRulesClient *armnetwork.SecurityR
 				Direction:                &[]armnetwork.SecurityRuleDirection{armnetwork.SecurityRuleDirectionInbound}[0],
 				Priority:                 &[]int32{priority}[0],
 				Protocol:                 &[]armnetwork.SecurityRuleProtocol{armnetwork.SecurityRuleProtocol(protocol)}[0],
-				SourceAddressPrefix:      &[]string{srcIp}[0],
+				SourceAddressPrefix:      newIp,
+				SourceAddressPrefixes:    newIps,
 				SourcePortRange:          &[]string{srcPort}[0],
 			},
 		},
@@ -178,7 +187,7 @@ func allowInbound(ctx context.Context, securityRulesClient *armnetwork.SecurityR
 	if err != nil {
 		return ok, fmt.Errorf("cannot get security rule create or update future response: %v", err)
 	}
-	log.Println("[INF] Successfully added ", srcIp, " to ", nsgName, " security rule ", ruleName)
+	log.Println("[INF] Successfully added", srcIp, "to", nsgName, "security rule", ruleName)
 	return true, nil
 }
 

@@ -135,7 +135,7 @@ func whitelistipHandler(w http.ResponseWriter, r *http.Request) {
 
 // Creates a new allow inbound security rule in NSG
 func allowInbound(ctx context.Context, securityRulesClient *armnetwork.SecurityRulesClient, rgName, nsgName, ruleName, dstIp, dstPort, protocol, srcIp, srcPort string, priority int32) (bool, error) {
-
+	log.Println("[INF] Trying to modify", nsgName, "security rule", ruleName)
 	var ok bool
 	// Check if rule already exists. If it does, appends the new source IP to the existing rule
 	securityRule, err := securityRulesClient.Get(ctx, rgName, nsgName, ruleName, nil)
@@ -194,6 +194,6 @@ func main() {
 	mux.HandleFunc("/", defaultHandler)
 	mux.HandleFunc("/whitelistip", whitelistipHandler)
 	mux.HandleFunc("/myip", myIpHandler)
-	log.Println("[INF] Listening on port ", httpInvokerPort)
+	log.Println("[INF] Listening on port", httpInvokerPort)
 	log.Fatal(http.ListenAndServe(":"+httpInvokerPort, mux))
 }

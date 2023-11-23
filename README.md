@@ -1,5 +1,7 @@
 # Azure Functions custom handler in Go
 
+![](/logo.svg)
+
 This repository contains an example of an Azure Functions custom handler in Go. **Detailed instruction how-to run you can find [here](https://github.com/groovy-sky/azure/tree/master/func-custom-handler-00#introduction).**
 
 You can use Azure Cloud Shell in Bash mode for deploying and building Functions environment. Just execute script below:

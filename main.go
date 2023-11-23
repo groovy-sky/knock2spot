@@ -4,12 +4,14 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"regexp"
 	"strconv"
 	"strings"
 
+	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
 	"github.com/Azure/azure-sdk-for-go/sdk/azidentity"
 	"github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/network/armnetwork/v2"
 )
@@ -70,7 +72,7 @@ func myIpHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 // Takes incoming IP address and adds it to NSG
-func whitelistipHandler(w http.ResponseWriter, r *http.Request) {
+func whitelistipHandler(w http.ResponseWriter, r *http.Request, cred *azidentity.ChainedTokenCredential) {
 	var ip, nsgId, dstPort, ruleName, ruleNumberStr string
 	var networkClientFactory *armnetwork.ClientFactory
 
@@ -114,10 +116,6 @@ func whitelistipHandler(w http.ResponseWriter, r *http.Request) {
 	// parse nsgId and get subscriptionId, resourceGroup, nsgName
 	subscriptionId, resourceGroup, _, resourceName := parseResourceId(nsgId)
 
-	cred, err := azidentity.NewDefaultAzureCredential(nil)
-	if err != nil {
-		log.Fatal(err)
-	}
 	ctx := context.Background()
 
 	networkClientFactory, err = armnetwork.NewClientFactory(subscriptionId, cred, nil)
@@ -191,7 +189,26 @@ func allowInbound(ctx context.Context, securityRulesClient *armnetwork.SecurityR
 	return true, nil
 }
 
+// Login to Azure, using different kind of methods - credentials, managed identity
+func azureLogin() (cred *azidentity.ChainedTokenCredential, err error) {
+	managedCred, _ := azidentity.NewManagedIdentityCredential(nil)
+	cliCred, _ := azidentity.NewAzureCLICredential(nil)
+	envCred, _ := azidentity.NewEnvironmentCredential(nil)
+	// If connection to 169.254.169.254 - skip Managed Identity Credentials
+	if _, tcpErr := net.Dial("tcp", "169.254.169.254:80"); tcpErr != nil {
+		cred, err = azidentity.NewChainedTokenCredential([]azcore.TokenCredential{cliCred, envCred}, nil)
+	} else {
+		cred, err = azidentity.NewChainedTokenCredential([]azcore.TokenCredential{managedCred, cliCred, envCred}, nil)
+	}
+
+	return cred, err
+}
+
 func main() {
+	login, err := azureLogin()
+	if err != nil {
+		log.Fatal("[ERR] : Failed to login:\n", err)
+	}
 	httpInvokerPort, exists := os.LookupEnv("HTTP_PORT")
 	if exists {
 		fmt.Println("HTTP_PORT: " + httpInvokerPort)
@@ -201,7 +218,9 @@ func main() {
 	mux := http.NewServeMux()
 	// Make default hander which returns default.html
 	mux.HandleFunc("/", defaultHandler)
-	mux.HandleFunc("/whitelistip", whitelistipHandler)
+	mux.HandleFunc("/whitelistip", func(w http.ResponseWriter, r *http.Request) {
+		whitelistipHandler(w, r, login)
+	})
 	mux.HandleFunc("/myip", myIpHandler)
 	log.Println("[INF] Listening on port", httpInvokerPort)
 	log.Fatal(http.ListenAndServe(":"+httpInvokerPort, mux))

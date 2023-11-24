@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
+	"github.com/Azure/azure-sdk-for-go/sdk/azcore/policy"
 	"github.com/Azure/azure-sdk-for-go/sdk/azidentity"
 	"github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/network/armnetwork/v2"
 )
@@ -203,27 +205,50 @@ func allowInbound(ctx context.Context, securityRulesClient *armnetwork.SecurityR
 	return true, nil
 }
 
+// timeoutWrapper signals ChainedTokenCredential to try another credential when managed identity times out
+type timeoutWrapper struct {
+	cred    *azidentity.ManagedIdentityCredential
+	timeout time.Duration
+}
+
+// GetToken implements the azcore.TokenCredential interface
+func (w *timeoutWrapper) GetToken(ctx context.Context, opts policy.TokenRequestOptions) (azcore.AccessToken, error) {
+	var tk azcore.AccessToken
+	var err error
+	if w.timeout > 0 {
+		c, cancel := context.WithTimeout(ctx, w.timeout)
+		defer cancel()
+		tk, err = w.cred.GetToken(c, opts)
+		if ce := c.Err(); errors.Is(ce, context.DeadlineExceeded) {
+			// The Context reached its deadline, probably because no managed identity is available.
+			// A credential unavailable error signals the chain to try its next credential, if any.
+			err = azidentity.NewCredentialUnavailableError("managed identity timed out")
+		} else {
+			// some managed identity implementation is available, so don't apply the timeout to future calls
+			w.timeout = 0
+		}
+	} else {
+		tk, err = w.cred.GetToken(ctx, opts)
+	}
+	return tk, err
+}
+
 // Login to Azure, using different kind of methods - credentials, managed identity
 func azureLogin() (cred *azidentity.ChainedTokenCredential, err error) {
 	// Get Managed Identity Credentials using wrapper
-	var managedIdentityCred *azidentity.ManagedIdentityCredential
+	manCred, _ := azidentity.NewManagedIdentityCredential(nil)
 	cliCred, _ := azidentity.NewAzureCLICredential(nil)
 	envCred, _ := azidentity.NewEnvironmentCredential(nil)
 	// If connection to 169.254.169.254 - skip Managed Identity Credentials
 	if _, tcpErr := net.Dial("tcp", "169.254.169.254:80"); tcpErr != nil {
 		cred, err = azidentity.NewChainedTokenCredential([]azcore.TokenCredential{cliCred, envCred}, nil)
 	} else {
-		// tries to obtain managed identity token with 5 retries
-		for i := 0; i < 5; i++ {
-			managedIdentityCred, err = azidentity.NewManagedIdentityCredential(nil)
-			if err != nil {
-				log.Println("[ERR] : Failed to obtain managed identity token:\n", err)
-				time.Sleep(5 * time.Second)
-			} else {
-				break
-			}
+		creds := []azcore.TokenCredential{
+			&timeoutWrapper{manCred, 5 * time.Second},
+			cliCred,
+			envCred,
 		}
-		cred, err = azidentity.NewChainedTokenCredential([]azcore.TokenCredential{cliCred, envCred, managedIdentityCred}, nil)
+		cred, err = azidentity.NewChainedTokenCredential(creds, nil)
 	}
 
 	return cred, err

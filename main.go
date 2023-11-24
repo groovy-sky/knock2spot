@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
 	"github.com/Azure/azure-sdk-for-go/sdk/azidentity"
@@ -149,6 +150,19 @@ func allowInbound(ctx context.Context, securityRulesClient *armnetwork.SecurityR
 	}
 	newIps = append(newIps, &srcIp)
 
+	// removes duplicates from the slice
+	seen := make(map[string]bool)
+	j := 0
+	for _, v := range newIps {
+		if _, ok := seen[*v]; ok {
+			continue
+		}
+		seen[*v] = true
+		newIps[j] = v
+		j++
+	}
+	newIps = newIps[:j]
+
 	// If total number of source IP addresses is less than 2, then set source only to the new IP address
 	if len(newIps) <= 1 {
 		newIp = &srcIp
@@ -185,20 +199,31 @@ func allowInbound(ctx context.Context, securityRulesClient *armnetwork.SecurityR
 	if err != nil {
 		return ok, fmt.Errorf("cannot get security rule create or update future response: %v", err)
 	}
-	log.Println("[INF] Successfully added", srcIp, "to", nsgName, "security rule", ruleName)
+	log.Println("[INF] Successfully updated rule", ruleName)
 	return true, nil
 }
 
 // Login to Azure, using different kind of methods - credentials, managed identity
 func azureLogin() (cred *azidentity.ChainedTokenCredential, err error) {
-	managedCred, _ := azidentity.NewManagedIdentityCredential(nil)
+	// Get Managed Identity Credentials using wrapper
+	var managedIdentityCred *azidentity.ManagedIdentityCredential
 	cliCred, _ := azidentity.NewAzureCLICredential(nil)
 	envCred, _ := azidentity.NewEnvironmentCredential(nil)
 	// If connection to 169.254.169.254 - skip Managed Identity Credentials
 	if _, tcpErr := net.Dial("tcp", "169.254.169.254:80"); tcpErr != nil {
 		cred, err = azidentity.NewChainedTokenCredential([]azcore.TokenCredential{cliCred, envCred}, nil)
 	} else {
-		cred, err = azidentity.NewChainedTokenCredential([]azcore.TokenCredential{managedCred, cliCred, envCred}, nil)
+		// tries to obtain managed identity token with 5 retries
+		for i := 0; i < 5; i++ {
+			managedIdentityCred, err = azidentity.NewManagedIdentityCredential(nil)
+			if err != nil {
+				log.Println("[ERR] : Failed to obtain managed identity token:\n", err)
+				time.Sleep(5 * time.Second)
+			} else {
+				break
+			}
+		}
+		cred, err = azidentity.NewChainedTokenCredential([]azcore.TokenCredential{cliCred, envCred, managedIdentityCred}, nil)
 	}
 
 	return cred, err

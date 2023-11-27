@@ -216,7 +216,7 @@ func azureLogin() (cred *azidentity.ChainedTokenCredential, err error) {
 	if _, tcpErr := net.Dial("tcp", "169.254.169.254:80"); tcpErr != nil {
 		cred, err = azidentity.NewChainedTokenCredential([]azcore.TokenCredential{cliCred, envCred}, nil)
 	} else {
-		cred, err = azidentity.NewChainedTokenCredential([]azcore.TokenCredential{manCred, cliCred, envCred}, nil)
+		cred, err = azidentity.NewChainedTokenCredential([]azcore.TokenCredential{manCred}, nil)
 	}
 
 	return cred, err

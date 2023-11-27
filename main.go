@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -12,10 +11,8 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
-	"github.com/Azure/azure-sdk-for-go/sdk/azcore/policy"
 	"github.com/Azure/azure-sdk-for-go/sdk/azidentity"
 	"github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/network/armnetwork/v2"
 )
@@ -206,34 +203,6 @@ func allowInbound(ctx context.Context, securityRulesClient *armnetwork.SecurityR
 	return true, nil
 }
 
-// timeoutWrapper signals ChainedTokenCredential to try another credential when managed identity times out
-type timeoutWrapper struct {
-	cred    *azidentity.ManagedIdentityCredential
-	timeout time.Duration
-}
-
-// GetToken implements the azcore.TokenCredential interface
-func (w *timeoutWrapper) GetToken(ctx context.Context, opts policy.TokenRequestOptions) (azcore.AccessToken, error) {
-	var tk azcore.AccessToken
-	var err error
-	if w.timeout > 0 {
-		c, cancel := context.WithTimeout(ctx, w.timeout)
-		defer cancel()
-		tk, err = w.cred.GetToken(c, opts)
-		if ce := c.Err(); errors.Is(ce, context.DeadlineExceeded) {
-			// The Context reached its deadline, probably because no managed identity is available.
-			// A credential unavailable error signals the chain to try its next credential, if any.
-			err = azidentity.NewCredentialUnavailableError("managed identity timed out")
-		} else {
-			// some managed identity implementation is available, so don't apply the timeout to future calls
-			w.timeout = 0
-		}
-	} else {
-		tk, err = w.cred.GetToken(ctx, opts)
-	}
-	return tk, err
-}
-
 // Login to Azure, using different kind of methods - credentials, managed identity
 func azureLogin() (cred *azidentity.ChainedTokenCredential, err error) {
 	_, err = url.Parse("http://169.254.169.254/metadata/identity/oauth2/token?api-version=2018-02-01")
@@ -247,7 +216,7 @@ func azureLogin() (cred *azidentity.ChainedTokenCredential, err error) {
 	if _, tcpErr := net.Dial("tcp", "169.254.169.254:80"); tcpErr != nil {
 		cred, err = azidentity.NewChainedTokenCredential([]azcore.TokenCredential{cliCred, envCred}, nil)
 	} else {
-		cred, err = azidentity.NewChainedTokenCredential([]azcore.TokenCredential{&timeoutWrapper{cred: manCred, timeout: 2 * time.Second}, cliCred, envCred}, nil)
+		cred, err = azidentity.NewChainedTokenCredential([]azcore.TokenCredential{manCred, cliCred, envCred}, nil)
 	}
 
 	return cred, err

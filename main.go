@@ -7,6 +7,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"regexp"
 	"strconv"
@@ -235,7 +236,10 @@ func (w *timeoutWrapper) GetToken(ctx context.Context, opts policy.TokenRequestO
 
 // Login to Azure, using different kind of methods - credentials, managed identity
 func azureLogin() (cred *azidentity.ChainedTokenCredential, err error) {
-	// Get Managed Identity Credentials using wrapper
+	_, err = url.Parse("http://169.254.169.254/metadata/identity/oauth2/token?api-version=2018-02-01")
+	if err != nil {
+		return nil, err
+	}
 	manCred, _ := azidentity.NewManagedIdentityCredential(nil)
 	cliCred, _ := azidentity.NewAzureCLICredential(nil)
 	envCred, _ := azidentity.NewEnvironmentCredential(nil)
@@ -243,7 +247,7 @@ func azureLogin() (cred *azidentity.ChainedTokenCredential, err error) {
 	if _, tcpErr := net.Dial("tcp", "169.254.169.254:80"); tcpErr != nil {
 		cred, err = azidentity.NewChainedTokenCredential([]azcore.TokenCredential{cliCred, envCred}, nil)
 	} else {
-		cred, err = azidentity.NewChainedTokenCredential([]azcore.TokenCredential{&timeoutWrapper{cred: manCred, timeout: 250 * time.Millisecond}}, nil)
+		cred, err = azidentity.NewChainedTokenCredential([]azcore.TokenCredential{&timeoutWrapper{cred: manCred, timeout: 2 * time.Second}, cliCred, envCred}, nil)
 	}
 
 	return cred, err

@@ -38,15 +38,10 @@ func parseResourceId(resourceId string) (subscriptionId, resourceGroup, resource
 
 // Returns form to input NSG Id, destination port, rule number and rule name
 func defaultHandler(w http.ResponseWriter, r *http.Request) {
-	w.Write([]byte(`<!DOCTYPE html>
-	<html>
-	<head>
-	  <meta charset="UTF-8" />
-	</head>
-	<body>
+	w.Write([]byte(`
 	<div>
 	<form action="whitelistip" method="POST">
-		<label for="nsgid">NSG's ID:</label><input type="text" id="nsgid" name="nsgid" value="" required /> <br><br>
+		<label for="resid">NSG's ID:</label><input type="text" id="resid" name="resid" value="" required /> <br><br>
 		
 		<label for="dstport">Destination's Port:</label><input type="text" id="dstport" value="" name="dstport" required /><br><br>
 	
@@ -55,27 +50,29 @@ func defaultHandler(w http.ResponseWriter, r *http.Request) {
 		<label for="rulename">Security Rule Name:</label><input type="text" id="rulename" name="rulename" value="" required><br><br>
 		
 		<input type="submit" value="Submit">
-	</form>
-	</div>
-	</body>
-	</html>`))
+	</form>`))
+}
+
+// Parse IP from X-Forwarded-For, Host or RemoteAddr headers
+func parseIp(r *http.Request) (ip string) {
+	if r.Header.Get("X-Forwarded-For") != "" {
+		ip = strings.Split(r.Header.Get("X-Forwarded-For"), ":")[0]
+	} else if r.Header.Get("Host") != "" {
+		ip = strings.Split(r.Header.Get("Host"), ":")[0]
+	} else if r.RemoteAddr != "" {
+		ip = strings.Split(r.RemoteAddr, ":")[0]
+	}
+	return ip
 }
 
 // Returns client's IP address
 func myIpHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Header.Get("X-Forwarded-For") != "" {
-		w.Write([]byte(strings.Split(r.Header.Get("X-Forwarded-For"), ":")[0]))
-	} else if r.Header.Get("Host") != "" {
-		w.Write([]byte(strings.Split(r.Header.Get("Host"), ":")[0]))
-	} else if r.RemoteAddr != "" {
-		w.Write([]byte(strings.Split(r.RemoteAddr, ":")[0]))
-	}
+	w.Write([]byte(parseIp(r)))
 }
 
 // Takes incoming IP address and adds it to NSG
 func whitelistipHandler(w http.ResponseWriter, r *http.Request, cred *azidentity.ChainedTokenCredential) {
-	var ip, nsgId, dstPort, ruleName, ruleNumberStr string
-	var networkClientFactory *armnetwork.ClientFactory
+	var ip, resid, dstPort, ruleName, ruleNumberStr string
 
 	// Get the request body and parse input data generated from default.html in case of POST request
 	switch r.Method {
@@ -84,56 +81,53 @@ func whitelistipHandler(w http.ResponseWriter, r *http.Request, cred *azidentity
 			fmt.Fprintf(w, "ParseForm() err: %v", err)
 			return
 		}
-		nsgId = r.FormValue("nsgid")
+		resid = r.FormValue("resid")
 		dstPort = r.FormValue("dstport")
 		ruleName = r.FormValue("rulename")
 		ruleNumberStr = r.FormValue("rulenumber")
 	default:
-		nsgId = os.Getenv("NSG_ID")
+		resid = os.Getenv("NSG_ID")
 		dstPort = os.Getenv("DST_PORT")
 		ruleName = os.Getenv("RULE_NAME")
 		ruleNumberStr = os.Getenv("RULE_NUMBER")
+	}
 
+	// validate if provided Resource Id is valid
+	if !validateResId(resid) {
+		log.Fatal("[ERR] Invalid Resource Id")
 	}
-	ruleNumber, err := strconv.Atoi(ruleNumberStr)
-	if err != nil {
-		log.Fatal(err)
-	}
+
+	// parse resid and get subscriptionId, resourceGroup, nsgName
+	subscriptionId, resourceGroup, resourceType, resourceName := parseResourceId(resid)
 
 	// Get client's IP address
-	if r.Header.Get("X-Forwarded-For") != "" {
-		ip = strings.Split(r.Header.Get("X-Forwarded-For"), ":")[0]
-	} else if r.Header.Get("Host") != "" {
-		ip = strings.Split(r.Header.Get("Host"), ":")[0]
-	} else if r.RemoteAddr != "" {
-		ip = strings.Split(r.RemoteAddr, ":")[0]
-	}
-
-	// validate if provided NSG Id is valid
-	if !validateResId(nsgId) {
-		log.Fatal("Invalid NSG Id")
-	}
-
-	// parse nsgId and get subscriptionId, resourceGroup, nsgName
-	subscriptionId, resourceGroup, _, resourceName := parseResourceId(nsgId)
+	ip = parseIp(r)
 
 	ctx := context.Background()
 
-	networkClientFactory, err = armnetwork.NewClientFactory(subscriptionId, cred, nil)
-	if err != nil {
-		log.Fatal(err)
-	}
-	client := networkClientFactory.NewSecurityRulesClient()
+	switch resourceType {
+	case "Microsoft.Network/networkSecurityGroups":
+		var networkClientFactory *armnetwork.ClientFactory
+		ruleNumber, err := strconv.Atoi(ruleNumberStr)
+		if err != nil {
+			log.Fatal(err)
+		}
+		networkClientFactory, err = armnetwork.NewClientFactory(subscriptionId, cred, nil)
+		if err != nil {
+			log.Fatal(err)
+		}
+		client := networkClientFactory.NewSecurityRulesClient()
 
-	_, err = allowInbound(ctx, client, resourceGroup, resourceName, ruleName, "*", dstPort, "Tcp", ip, "*", int32(ruleNumber))
-	if err != nil {
-		log.Fatal(err)
+		_, err = addNsgRule(ctx, client, resourceGroup, resourceName, ruleName, "*", dstPort, "Tcp", ip, "*", int32(ruleNumber))
+		if err != nil {
+			log.Fatal(err)
+		}
+		w.Write([]byte(""))
 	}
-	w.Write([]byte(""))
 }
 
 // Creates a new allow inbound security rule in NSG
-func allowInbound(ctx context.Context, securityRulesClient *armnetwork.SecurityRulesClient, rgName, nsgName, ruleName, dstIp, dstPort, protocol, srcIp, srcPort string, priority int32) (bool, error) {
+func addNsgRule(ctx context.Context, securityRulesClient *armnetwork.SecurityRulesClient, rgName, nsgName, ruleName, dstIp, dstPort, protocol, srcIp, srcPort string, priority int32) (bool, error) {
 	log.Println("[INF] Trying to modify", nsgName, "security rule", ruleName)
 	var ok bool
 	// Check if rule already exists. If it does, appends the new source IP to the existing rule

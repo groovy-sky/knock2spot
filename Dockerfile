@@ -1,5 +1,5 @@
 FROM golang:1.21-alpine3.18 AS builder
-RUN apk add --no-cache git && go install github.com/groovy-sky/knock2spot@latest
+RUN apk add --no-cache git && go install github.com/groovy-sky/knock2spot@v1.1.5
 
 FROM alpine:3.18
 ENV HTTP_PORT=8080

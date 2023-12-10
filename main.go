@@ -6,7 +6,6 @@ import (
 	"log"
 	"net"
 	"net/http"
-	"net/url"
 	"os"
 	"regexp"
 	"strconv"
@@ -41,6 +40,7 @@ func parseResourceId(resourceId string) (subscriptionId, resourceGroup, resource
 // Draws default page which contains links to all related pages
 // Also contains a form to submit data to whitelistipHandler
 func defaultHandler(w http.ResponseWriter, r *http.Request) {
+	ip := parseIp(r)
 	w.Write([]byte(`
 	<!DOCTYPE html>
 	<html>
@@ -100,10 +100,7 @@ func defaultHandler(w http.ResponseWriter, r *http.Request) {
 			</form>
 		</fieldset>
 		<fieldset>
-			<form action="myip" method="GET">
-			<legend>Show my IP</legend>
-				<input type="submit" value="Open"><br>
-			</form>
+			<big>Detected IP:` + ip + `</big>
 		</fieldset>
 	</body>
 	</html>
@@ -131,6 +128,11 @@ func myIpHandler(w http.ResponseWriter, r *http.Request) {
 func whitelistipHandler(w http.ResponseWriter, r *http.Request, cred *azidentity.ChainedTokenCredential) {
 	var ip, resid, dstPort, ruleName, ruleNumberStr string
 	var err error
+	var resids []string
+
+	// Create context
+	ctx := context.Background()
+
 	// Get the request body and parse input data generated from default.html in case of POST request
 	switch r.Method {
 	case "POST":
@@ -148,54 +150,58 @@ func whitelistipHandler(w http.ResponseWriter, r *http.Request, cred *azidentity
 		ruleNumberStr = os.Getenv("RULE_NUMBER")
 	}
 
-	// validate if provided Resource Id is valid
-	if !validateResId(resid) {
-		log.Fatal("[ERR] Invalid Resource Id")
-	}
-
-	// parse resid and get subscriptionId, resourceGroup, nsgName
-	subscriptionId, resourceGroup, resourceType, resourceName := parseResourceId(resid)
-
 	// Get client's IP address
 	ip = parseIp(r)
 
-	// Create context
-	ctx := context.Background()
-
-	fmt.Println(resourceType)
-
-	switch resourceType {
-	case "microsoft.network/networksecuritygroups":
-		var networkClientFactory *armnetwork.ClientFactory
-		ruleNumber, err := strconv.Atoi(ruleNumberStr)
-		if err != nil {
-			log.Fatal(err)
-		}
-		networkClientFactory, err = armnetwork.NewClientFactory(subscriptionId, cred, nil)
-		if err != nil {
-			log.Fatal(err)
-		}
-		client := networkClientFactory.NewSecurityRulesClient()
-
-		_, err = addNsgRule(ctx, client, resourceGroup, resourceName, ruleName, "*", dstPort, "Tcp", ip, "*", int32(ruleNumber))
-
-	case "microsoft.storage/storageaccounts":
-		storageAccountsClient, err := armstorage.NewAccountsClient(subscriptionId, cred, nil)
-
-		if err != nil {
-			log.Fatal(err)
-		}
-		_, err = addStorageRule(ctx, storageAccountsClient, resourceGroup, resourceName, ip)
-	default:
-		log.Fatal("[ERR] Invalid Resource Type")
-	}
-	if err != nil {
-		log.Fatal(err)
+	// Checks if resid has semicolon in it. If it does - multiple resid's are provided
+	// Creates a slice of resid's and iterates over it. If none semicolon is found - slice will contain only one resid
+	if strings.Contains(resid, ";") {
+		resids = strings.Split(resid, ";")
 	} else {
-		log.Println("[INF] IP", ip, "whitelisted for", resid)
-		w.Write([]byte(""))
+		resids = []string{resid}
 	}
 
+	for _, resid := range resids {
+		// validate if provided Resource Id is valid
+		if !validateResId(resid) {
+			log.Fatal("[ERR] Invalid Resource Id")
+		}
+
+		// parse resid and get subscriptionId, resourceGroup, nsgName
+		subscriptionId, resourceGroup, resourceType, resourceName := parseResourceId(resid)
+
+		switch resourceType {
+		case "microsoft.network/networksecuritygroups":
+			var networkClientFactory *armnetwork.ClientFactory
+			ruleNumber, err := strconv.Atoi(ruleNumberStr)
+			if err != nil {
+				log.Fatal(err)
+			}
+			networkClientFactory, err = armnetwork.NewClientFactory(subscriptionId, cred, nil)
+			if err != nil {
+				log.Fatal(err)
+			}
+			client := networkClientFactory.NewSecurityRulesClient()
+
+			_, err = addNsgRule(ctx, client, resourceGroup, resourceName, ruleName, "*", dstPort, "Tcp", ip, "*", int32(ruleNumber))
+
+		case "microsoft.storage/storageaccounts":
+			storageAccountsClient, err := armstorage.NewAccountsClient(subscriptionId, cred, nil)
+
+			if err != nil {
+				log.Fatal(err)
+			}
+			_, err = addStorageRule(ctx, storageAccountsClient, resourceGroup, resourceName, ip)
+		default:
+			log.Fatal("[ERR] Invalid Resource Type")
+		}
+		if err != nil {
+			log.Fatal(err)
+		} else {
+			log.Println("[INF] IP", ip, "whitelisted for", resid)
+			w.Write([]byte(""))
+		}
+	}
 }
 
 // Creates a new rule in Storage Account Firewall
@@ -327,10 +333,7 @@ func addNsgRule(ctx context.Context, securityRulesClient *armnetwork.SecurityRul
 
 // Login to Azure, using different kind of methods - credentials, managed identity
 func azureLogin() (cred *azidentity.ChainedTokenCredential, err error) {
-	_, err = url.Parse("http://169.254.169.254/metadata/identity/oauth2/token?api-version=2018-02-01")
-	if err != nil {
-		return nil, err
-	}
+	// Create credentials using Managed Identity, Azure CLI, Environment variables
 	manCred, _ := azidentity.NewManagedIdentityCredential(nil)
 	cliCred, _ := azidentity.NewAzureCLICredential(nil)
 	envCred, _ := azidentity.NewEnvironmentCredential(nil)

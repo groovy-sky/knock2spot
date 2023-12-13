@@ -88,7 +88,9 @@ func defaultHandler(w http.ResponseWriter, r *http.Request) {
 				<input type="text" id="rulenumber" name="rulenumber" value="" required><br>
 				<label for="rulename">Security Rule Name:</label>
 				<input type="text" id="rulename" name="rulename" value="" required><br>
-				<input type="submit" value="Submit">
+				<input type="checkbox" id="debug" name="debug" value="true" checked><br>
+				<label for="debug">Print result</label><br>
+				<input type="submit" value="Submit"><br>
 			</form>
 		</fieldset>
 		<fieldset>
@@ -96,6 +98,8 @@ func defaultHandler(w http.ResponseWriter, r *http.Request) {
 			<legend>Whitelist IP for PaaS</legend>
 				<label for="resid">PaaS resource's ID:</label>
 				<input type="text" id="resid" name="resid" value="" required /><br>
+				<input type="checkbox" id="debug" name="debug" value="debug" checked><br>
+				<label for="debug">Print result</label><br>
 				<input type="submit" value="Submit">
 			</form>
 		</fieldset>
@@ -124,9 +128,9 @@ func myIpHandler(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte(parseIp(r)))
 }
 
-// Takes incoming IP address and adds it to NSG
+// Takes incoming IP address and adds it to specified resource
 func whitelistipHandler(w http.ResponseWriter, r *http.Request, cred *azidentity.ChainedTokenCredential) {
-	var ip, resid, dstPort, ruleName, ruleNumberStr string
+	var ip, resid, dstPort, ruleName, ruleNumberStr, debugFlag string
 	var err error
 	var resids []string
 
@@ -143,11 +147,13 @@ func whitelistipHandler(w http.ResponseWriter, r *http.Request, cred *azidentity
 		dstPort = r.FormValue("dstport")
 		ruleName = r.FormValue("rulename")
 		ruleNumberStr = r.FormValue("rulenumber")
+		debugFlag = r.FormValue("debug")
 	default:
 		resid = os.Getenv("RES_ID")
 		dstPort = os.Getenv("DST_PORT")
 		ruleName = os.Getenv("RULE_NAME")
 		ruleNumberStr = os.Getenv("RULE_NUMBER")
+		debugFlag = os.Getenv("DEBUG")
 	}
 
 	// Get client's IP address
@@ -199,7 +205,13 @@ func whitelistipHandler(w http.ResponseWriter, r *http.Request, cred *azidentity
 			log.Fatal(err)
 		} else {
 			log.Println("[INF] IP", ip, "whitelisted for", resid)
-			w.Write([]byte(""))
+			switch len(debugFlag) {
+			case 0:
+				w.Write([]byte(""))
+			default:
+				w.Write([]byte("IP " + ip + " whitelisted for " + resid + "\n"))
+			}
+
 		}
 	}
 }
@@ -341,7 +353,7 @@ func azureLogin() (cred *azidentity.ChainedTokenCredential, err error) {
 	if _, tcpErr := net.Dial("tcp", "169.254.169.254:80"); tcpErr != nil {
 		cred, err = azidentity.NewChainedTokenCredential([]azcore.TokenCredential{cliCred, envCred}, nil)
 	} else {
-		cred, err = azidentity.NewChainedTokenCredential([]azcore.TokenCredential{manCred}, nil)
+		cred, err = azidentity.NewChainedTokenCredential([]azcore.TokenCredential{manCred, cliCred, envCred}, nil)
 	}
 
 	return cred, err

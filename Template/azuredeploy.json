@@ -2,93 +2,144 @@
   "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
   "contentVersion": "1.0.0.0",
   "parameters": {
-    "storageAccountType": {
-      "type": "string",
-      "defaultValue": "Standard_LRS",
-      "allowedValues": ["Standard_LRS", "Standard_GRS", "Standard_RAGRS"],
-      "metadata": {
-        "description": "Storage Account type"
+      "appName": {
+          "defaultValue": "knock2spot",
+          "type": "String"
+      },
+      "appImage": {
+          "defaultValue": "gr00vysky/knock2spot:latest",
+          "type": "String"
+      },
+      "nsgName": {
+          "defaultValue": "sample-nsg",
+          "type": "String"
+      },
+        "location": {
+        "type": "string",
+        "defaultValue": "[resourceGroup().location]"
       }
-    },
-    "location": {
-      "type": "string",
-      "defaultValue": "[resourceGroup().location]",
-      "metadata": {
-        "description": "Location for all resources."
-      }
-    }
   },
   "variables": {
-    "functionAppName": "[concat('function-',uniquestring(resourceGroup().id))]",
-    "hostingPlanName": "[concat('appplan-',uniquestring(resourceGroup().id))]",
-    "storageAccountName": "[concat('storage',uniquestring(resourceGroup().id))]",
-    "storageAccountid": "[concat(resourceGroup().id,'/providers/','Microsoft.Storage/storageAccounts/', variables('storageAccountName'))]"
+    "appPlan": "[concat('appPlan-',uniquestring(concat(resourceGroup().id,subscription().id)))]"
   },
   "resources": [
-    {
-      "type": "Microsoft.Storage/storageAccounts",
-      "name": "[variables('storageAccountName')]",
-      "apiVersion": "2016-12-01",
-      "location": "[parameters('location')]",
-      "kind": "Storage",
-      "sku": {
-        "name": "[parameters('storageAccountType')]"
+      {
+          "type": "Microsoft.App/managedEnvironments",
+          "apiVersion": "2023-08-01-preview",
+          "name": "[variables('appPlan')]",
+          "location": "[parameters('location')]",
+          "properties": {
+              "zoneRedundant": false,
+              "kedaConfiguration": {},
+              "daprConfiguration": {},
+              "customDomainConfiguration": {},
+              "peerAuthentication": {
+                  "mtls": {
+                      "enabled": false
+                  }
+              }
+          }
+      },
+      {
+          "type": "Microsoft.Network/networkSecurityGroups",
+          "apiVersion": "2023-06-01",
+          "name": "[parameters('nsgName')]",
+          "location": "[parameters('location')]",
+          "properties": {
+              "securityRules": []
+          }
+      },
+      {
+          "type": "Microsoft.App/containerapps",
+          "apiVersion": "2023-08-01-preview",
+          "name": "[parameters('appName')]",
+          "location": "[parameters('location')]",
+          "dependsOn": [
+              "[resourceId('Microsoft.App/managedEnvironments', variables('appPlan'))]"
+          ],
+          "identity": {
+              "type": "SystemAssigned"
+          },
+          "properties": {
+              "managedEnvironmentId": "[resourceId('Microsoft.App/managedEnvironments', variables('appPlan'))]",
+              "environmentId": "[resourceId('Microsoft.App/managedEnvironments', variables('appPlan'))]",
+              "configuration": {
+                  "activeRevisionsMode": "Single",
+                  "ingress": {
+                      "external": true,
+                      "targetPort": 8080,
+                      "exposedPort": 0,
+                      "transport": "Auto",
+                      "traffic": [
+                          {
+                              "weight": 100,
+                              "latestRevision": true
+                          }
+                      ],
+                      "allowInsecure": true,
+                      "clientCertificateMode": "Ignore",
+                      "stickySessions": {
+                          "affinity": "none"
+                      }
+                  }
+              },
+              "template": {
+                  "containers": [
+                      {
+                          "image": "[parameters('appImage')]",
+                          "name": "[parameters('appName')]",
+                          "env": [
+                              {
+                                  "name": "RES_ID",
+                                  "value": "[resourceId('Microsoft.Network/networkSecurityGroups', parameters('nsgName'))]"
+                              },
+                              {
+                                  "name": "DST_PORT",
+                                  "value": "22"
+                              },
+                              {
+                                  "name": "RULE_NAME",
+                                  "value": "ssh-port-allow"
+                              },
+                              {
+                                  "name": "RULE_NUMBER",
+                                  "value": "110"
+                              }
+                          ],
+                          "resources": {
+                              "cpu": 0.5,
+                              "memory": "1Gi"
+                          },
+                          "probes": [
+                              {
+                                  "type": "Liveness",
+                                  "httpGet": {
+                                      "path": "/",
+                                      "port": 8080,
+                                      "scheme": "HTTP"
+                                  },
+                                  "periodSeconds": 10
+                              }
+                          ]
+                      }
+                  ],
+                  "scale": {
+                      "minReplicas": 0,
+                      "maxReplicas": 10
+                  },
+                  "volumes": []
+              }
+          }
       }
-    },
-    {
-      "type": "Microsoft.Web/serverfarms",
-      "apiVersion": "2018-11-01",
-      "name": "[variables('hostingPlanName')]",
-      "location": "[parameters('location')]",
-      "kind": "linux",
-      "properties": {
-          "name": "[variables('hostingPlanName')]",
-          "workerSize": "0",
-          "workerSizeId": "0",
-          "numberOfWorkers": "1",
-          "reserved": true
-                },
-      "sku": {
-          "Tier": "Dynamic",
-          "Name": "Y1"
-      }
-    },
-    {
-      "apiVersion": "2018-11-01",
-      "type": "Microsoft.Web/sites",
-      "name": "[variables('functionAppName')]",
-      "location": "[parameters('location')]",
-      "kind": "functionapp,linux",
-      "dependsOn": [
-        "[resourceId('Microsoft.Web/serverfarms', variables('hostingPlanName'))]",
-        "[resourceId('Microsoft.Storage/storageAccounts', variables('storageAccountName'))]"
-      ],
-      "properties": {
-        "serverFarmId": "[resourceId('Microsoft.Web/serverfarms', variables('hostingPlanName'))]",
-        "siteConfig": {
-          "appSettings": [
-            {
-              "name": "AzureWebJobsStorage",
-              "value": "[concat('DefaultEndpointsProtocol=https;AccountName=', variables('storageAccountName'), ';AccountKey=', listKeys(variables('storageAccountid'),'2015-05-01-preview').key1)]"
-            },
-            {
-                "name": "FUNCTIONS_EXTENSION_VERSION",
-                "value": "~3"
-            },
-            {
-                "name": "FUNCTIONS_WORKER_RUNTIME",
-                "value": "python"
-            }
-          ]
-        }
-      }
-    }
   ],
-      "outputs": {
-        "functionName": {
-            "type": "string",
-            "value": "[variables('functionAppName')]"
-        }
+  "outputs": {
+      "containerAppId": {
+          "type": "string",
+          "value": "[resourceId('Microsoft.App/containerapps', parameters('appName'))]"
+      },
+      "nsgId": {
+        "type": "string",
+        "value": "[resourceId('Microsoft.Network/networkSecurityGroups', parameters('nsgName'))]"
     }
+  }
 }
-

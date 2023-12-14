@@ -142,8 +142,8 @@
         "value": "[resourceId('Microsoft.Network/networkSecurityGroups', parameters('nsgName'))]"
     },
     "containerAppUrl": {
-      "type": "object",
-      "value": "[reference(resourceId('Microsoft.App/containerapps', parameters('appName')))]"
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.App/containerapps', parameters('appName'))).configuration.ingress.fqdn]"
     }
   }
 }

@@ -140,6 +140,10 @@
       "nsgId": {
         "type": "string",
         "value": "[resourceId('Microsoft.Network/networkSecurityGroups', parameters('nsgName'))]"
+    },
+    "containerAppUrl": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.App/containerapps', parameters('appName'))).ingress.externalUrl]"
     }
   }
 }

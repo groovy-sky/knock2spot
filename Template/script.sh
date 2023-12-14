@@ -13,7 +13,10 @@ echo "## Assigning Contributor role to the App"
 
 appResId=$(echo $deployResult | jq -r '.properties.outputs.containerAppId.value')
 nsgId=$(echo $deployResult | jq -r '.properties.outputs.nsgId.value')
+appUrl=$(echo $deployResult | jq -r '.properties.outputs.containerAppUrl.value')
 
 identityId=$(az resource show --id $appResId --query "identity.principalId" -o tsv)
 
 az role assignment create --assignee $identityId --role 'Contributor' --scope $nsgId
+
+curl $appUrl

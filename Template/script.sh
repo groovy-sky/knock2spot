@@ -19,4 +19,6 @@ identityId=$(az resource show --id $appResId --query "identity.principalId" -o t
 
 az role assignment create --assignee $identityId --role 'Contributor' --scope $nsgId
 
-curl $appUrl
+echo "## Testing the App"
+
+curl https://$appUrl/whitelistip

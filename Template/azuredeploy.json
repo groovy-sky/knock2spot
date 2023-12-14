@@ -104,6 +104,10 @@
                               {
                                   "name": "RULE_NUMBER",
                                   "value": "110"
+                              },
+                              {
+                                  "name": "DEBUG",
+                                  "value": "yes"
                               }
                           ],
                           "resources": {

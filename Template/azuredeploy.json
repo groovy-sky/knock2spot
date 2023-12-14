@@ -142,7 +142,7 @@
         "value": "[resourceId('Microsoft.Network/networkSecurityGroups', parameters('nsgName'))]"
     },
     "containerAppUrl": {
-      "type": "string",
+      "type": "object",
       "value": "[reference(resourceId('Microsoft.App/containerapps', parameters('appName')))]"
     }
   }

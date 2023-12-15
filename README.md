@@ -28,3 +28,16 @@ This project uses [Azure SDK for Go](https://github.com/Azure/azure-sdk-for-go) 
 2. It parses requester IP address from request headers and tries to whitelist it on specified resources.
 
 3. Using token and requester's IP address it tries to append IP address to specified NSG rule or PaaS firewall.
+
+
+## How to run?
+
+Easiest way how you can run this project is to use [the Docker image](https://hub.docker.com/repository/docker/gr00vysky/knock2spot) or build it yourself using the [Dockerfile](/Dockerfile). 
+
+If you need TLS support you can run it on Azure Container App or Azure Web App for Containers. Below code, which you can execute in Cloud Shell, will deploy this project to Azure Container App and assign managed identity to it:
+
+```
+wget https://raw.githubusercontent.com/groovy-sky/knock2spot/master/Template/script.sh
+chmod +x script.sh
+./script.sh
+```

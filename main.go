@@ -13,6 +13,7 @@ import (
 
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
 	"github.com/Azure/azure-sdk-for-go/sdk/azidentity"
+	"github.com/Azure/azure-sdk-for-go/sdk/messaging/azservicebus"
 	"github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/network/armnetwork/v2"
 	"github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/storage/armstorage"
 )
@@ -138,6 +139,7 @@ func whitelistipHandler(w http.ResponseWriter, r *http.Request, cred *azidentity
 	ctx := context.Background()
 
 	// Get the request body and parse input data generated from default.html in case of POST request
+	// or take data from environment variables in case of GET request
 	switch r.Method {
 	case "POST":
 		if err := r.ParseForm(); err != nil {
@@ -273,6 +275,140 @@ func addStorageRule(ctx context.Context, storageAccountsClient *armstorage.Accou
 	return true, nil
 }
 
+// Gets input value and transfer it to Azure Service Bus
+func messageHandler(w http.ResponseWriter, r *http.Request, cred *azidentity.ChainedTokenCredential) {
+	var message, queue string
+	namespace, ok := os.LookupEnv("AZURE_SERVICEBUS_HOSTNAME")
+
+	if !ok {
+		log.Fatal("[ERR] AZURE_SERVICEBUS_HOSTNAME environment variable is not set")
+	}
+
+	// Checks URL and request type. If it is GET and request is for /message - draws default page
+	// If it is POST - reads user's input and sends it to Service Bus
+	// If it is GET and request is for /message/{queue} - reads message from specified queue
+	switch r.Method {
+	case "POST":
+		// Reads user's input
+		message = r.FormValue("message")
+		queue = r.FormValue("queue")
+	case "GET":
+		// Gets queue name from URL
+		queue = strings.TrimPrefix(r.URL.Path, "/message/")
+		if queue == "" {
+			w.Write([]byte(`
+	<!DOCTYPE html>
+	<html>
+	<head>
+		<title>knock2spot</title>
+		<link rel="icon" type="image/x-icon" href="https://raw.githubusercontent.com/groovy-sky/knock2spot/master/logo.svg">
+		<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/normalize/8.0.1/normalize.min.css">
+		<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/skeleton/2.0.4/skeleton.min.css">
+		<style>
+			/* Your custom CSS styles here */
+			form {
+				margin: 20px;
+				padding: 10px;
+				display: inline-block;
+			}
+			big {
+				margin: 5px;
+				align: center;
+				style: bold;
+			}
+			fieldset {
+				border: none;
+				box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+				margin-bottom: 10px;
+				padding: 5px;
+				width: 20%; 
+			}
+			fieldset:nth-child(odd) {
+				background-color: #f5f5f5; /* Lighter color for odd fieldsets */
+			}
+			fieldset:nth-child(even) {
+				background-color: #ebebeb; /* Darker color for even fieldsets */
+			}
+		</style>
+	</head>
+	<body>
+		<fieldset>
+			<form action="" method="POST">
+			<legend>Send message to Service Bus</legend>
+				<label for="message">Message:</label>
+				<input type="text" id="message" name="message" value="" required /><br>
+				<label for="queue">Queue:</label>
+				<input type="text" id="queue" value="" name="queue" required /><br>
+				<input type="submit" value="Submit">
+			</form>
+		</fieldset>
+	</body>
+	</html>
+	`))
+			return
+		}
+	}
+
+	// Create context
+	ctx := context.Background()
+
+	client, err := azservicebus.NewClient(namespace, cred, nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+	switch message {
+	case "":
+		// If message is empty - read message from queue
+		receiver, err := client.NewReceiverForQueue(queue, nil)
+
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		defer receiver.Close(ctx)
+
+		messages, err := receiver.ReceiveMessages(ctx,
+			// The number of messages to receive. Note this is merely an upper
+			// bound. It is possible to get fewer message (or zero), depending
+			// on the contents of the remote queue or subscription and network
+			// conditions.
+			100,
+			nil,
+		)
+
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		for i, message := range messages {
+			receiver.CompleteMessage(ctx, message, nil)
+			w.Write([]byte(fmt.Sprintf("Message %d: %s\n", i, message.Body)))
+		}
+	default:
+
+		// Create a sender using the client in specified topic
+		sender, err := client.NewSender(queue, nil)
+
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		defer sender.Close(ctx)
+
+		sbMessage := &azservicebus.Message{
+			Body: []byte(message),
+		}
+
+		// Send a single message to the topic
+		err = sender.SendMessage(ctx, sbMessage, nil)
+
+		if err != nil {
+			log.Fatal(err)
+		}
+	}
+
+}
+
 // Creates a new allow inbound security rule in NSG
 func addNsgRule(ctx context.Context, securityRulesClient *armnetwork.SecurityRulesClient, rgName, nsgName, ruleName, dstIp, dstPort, protocol, srcIp, srcPort string, priority int32) (bool, error) {
 	log.Println("[INF] Trying to modify", nsgName, "security rule", ruleName)
@@ -376,6 +512,9 @@ func main() {
 		whitelistipHandler(w, r, login)
 	})
 	mux.HandleFunc("/myip", myIpHandler)
+	mux.HandleFunc("/message/", func(w http.ResponseWriter, r *http.Request) {
+		messageHandler(w, r, login)
+	})
 	log.Println("[INF] Listening on port", httpInvokerPort)
 	log.Fatal(http.ListenAndServe(":"+httpInvokerPort, mux))
 }

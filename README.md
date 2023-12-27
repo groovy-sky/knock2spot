@@ -34,10 +34,16 @@ This project uses [Azure SDK for Go](https://github.com/Azure/azure-sdk-for-go) 
 
 Easiest way how you can run this project is to use [the Docker image](https://hub.docker.com/repository/docker/gr00vysky/knock2spot) or build it yourself using the [Dockerfile](/Dockerfile). 
 
-If you need TLS support you can run it on Azure Container App or Azure Web App for Containers. Below code, which you can execute in Cloud Shell, will deploy this project to Azure Container App and assign managed identity to it:
+If you need TLS support you can run it on Azure Container App or Azure Web App for Containers. Open [Cloud Shell](https://shell.azure.com) and execute code below:
 
 ```
 wget https://raw.githubusercontent.com/groovy-sky/knock2spot/master/Template/script.sh
 chmod +x script.sh
 ./script.sh
 ```
+
+## To-Do
+
+- [ ] Add support for more Azure resources
+- [ ] Make default IPs
+- [ ] Make force rewrite flag

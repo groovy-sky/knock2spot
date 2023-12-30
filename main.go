@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
 	"github.com/Azure/azure-sdk-for-go/sdk/azidentity"
@@ -18,8 +19,15 @@ import (
 	"github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/storage/armstorage"
 )
 
+func sanitazeInput(input string) string {
+	// Removes all non-alphanumeric characters from input
+	regex := `[^\w\d\.\/\@\;\_\-]`
+	r := regexp.MustCompile(regex)
+	return r.ReplaceAllString(input, "")
+}
+
 // Checks that input matches Azure Resource Id format
-func validateResId(input string) bool {
+func validateResID(input string) bool {
 	// Validates that input is valid Azure Resource Id using regex
 	regex := `^\/subscriptions\/.{36}\/resourceGroups\/.*\/providers\/[a-zA-Z0-9]*.[a-zA-Z0-9]*\/[a-zA-Z0-9]*\/.*`
 	r := regexp.MustCompile(regex)
@@ -27,21 +35,21 @@ func validateResId(input string) bool {
 }
 
 // Gets Azure Resource's names of subscription, group, resource type etc.
-func parseResourceId(resourceId string) (subscriptionId, resourceGroup, resourceProvider, resourceName string) {
-	resourceId = strings.ToLower(resourceId)
+func parseresourceID(resourceID string) (subscriptionID, resourceGroup, resourceProvider, resourceName string) {
+	resourceID = strings.ToLower(resourceID)
 	// takes Azure resource Id and parses sub id, group, resource type and name
-	parts := strings.Split(resourceId, "/")
-	subscriptionId = parts[2]
+	parts := strings.Split(resourceID, "/")
+	subscriptionID = parts[2]
 	resourceGroup = parts[4]
 	resourceProvider = strings.Join(parts[6:8], "/")
 	resourceName = parts[8]
-	return subscriptionId, resourceGroup, resourceProvider, resourceName
+	return subscriptionID, resourceGroup, resourceProvider, resourceName
 }
 
 // Draws default page which contains links to all related pages
 // Also contains a form to submit data to whitelistipHandler
 func defaultHandler(w http.ResponseWriter, r *http.Request) {
-	ip := parseIp(r)
+	ip := parseIP(r)
 	w.Write([]byte(`
 	<!DOCTYPE html>
 	<html>
@@ -113,7 +121,7 @@ func defaultHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 // Parse IP from X-Forwarded-For, Host or RemoteAddr headers
-func parseIp(r *http.Request) (ip string) {
+func parseIP(r *http.Request) (ip string) {
 	if r.Header.Get("X-Forwarded-For") != "" {
 		ip = strings.Split(r.Header.Get("X-Forwarded-For"), ":")[0]
 	} else if r.Header.Get("Host") != "" {
@@ -125,8 +133,9 @@ func parseIp(r *http.Request) (ip string) {
 }
 
 // Returns client's IP address
-func myIpHandler(w http.ResponseWriter, r *http.Request) {
-	w.Write([]byte(parseIp(r)))
+func myIPHandler(w http.ResponseWriter, r *http.Request) {
+	log.Println("[INF] Handling myip request")
+	w.Write([]byte(parseIP(r)))
 }
 
 // Takes incoming IP address and adds it to specified resource
@@ -135,6 +144,8 @@ func whitelistipHandler(w http.ResponseWriter, r *http.Request, cred *azidentity
 	var err error
 	var resids []string
 
+	log.Println("[INF] Handling whitelistip request")
+
 	// Create context
 	ctx := context.Background()
 
@@ -142,14 +153,16 @@ func whitelistipHandler(w http.ResponseWriter, r *http.Request, cred *azidentity
 	// or take data from environment variables in case of GET request
 	switch r.Method {
 	case "POST":
-		if err := r.ParseForm(); err != nil {
-			log.Fatal("[ERR] Invalid Parsing of Form")
+		if err = r.ParseForm(); err != nil {
+			log.Println("[ERR] Invalid Parsing of Form")
+			w.Write([]byte("Invalid Parsing of Form"))
+			return
 		}
-		resid = r.FormValue("resid")
-		dstPort = r.FormValue("dstport")
-		ruleName = r.FormValue("rulename")
-		ruleNumberStr = r.FormValue("rulenumber")
-		debugFlag = r.FormValue("debug")
+		resid = sanitazeInput(r.FormValue("resid"))
+		dstPort = sanitazeInput(r.FormValue("dstport"))
+		ruleName = sanitazeInput(r.FormValue("rulename"))
+		ruleNumberStr = sanitazeInput(r.FormValue("rulenumber"))
+		debugFlag = sanitazeInput(r.FormValue("debug"))
 	default:
 		resid = os.Getenv("RES_ID")
 		dstPort = os.Getenv("DST_PORT")
@@ -159,7 +172,7 @@ func whitelistipHandler(w http.ResponseWriter, r *http.Request, cred *azidentity
 	}
 
 	// Get client's IP address
-	ip = parseIp(r)
+	ip = parseIP(r)
 
 	// Checks if resid has semicolon in it. If it does - multiple resid's are provided
 	// Creates a slice of resid's and iterates over it. If none semicolon is found - slice will contain only one resid
@@ -171,40 +184,49 @@ func whitelistipHandler(w http.ResponseWriter, r *http.Request, cred *azidentity
 
 	for _, resid := range resids {
 		// validate if provided Resource Id is valid
-		if !validateResId(resid) {
-			log.Fatal("[ERR] Invalid Resource Id")
+		if !validateResID(resid) {
+			log.Println("[ERR] Invalid Resource Id")
+			return
 		}
 
-		// parse resid and get subscriptionId, resourceGroup, nsgName
-		subscriptionId, resourceGroup, resourceType, resourceName := parseResourceId(resid)
+		// parse resid and get subscriptionID, resourceGroup, nsgName
+		subscriptionID, resourceGroup, resourceType, resourceName := parseresourceID(resid)
 
 		switch resourceType {
 		case "microsoft.network/networksecuritygroups":
 			var networkClientFactory *armnetwork.ClientFactory
-			ruleNumber, err := strconv.Atoi(ruleNumberStr)
+			var ruleNumber int
+			ruleNumber, err = strconv.Atoi(ruleNumberStr)
 			if err != nil {
-				log.Fatal(err)
+				log.Println("[ERR] Can't get rule number (will use default): ", err)
+				ruleNumber = 4096
 			}
-			networkClientFactory, err = armnetwork.NewClientFactory(subscriptionId, cred, nil)
+			networkClientFactory, err = armnetwork.NewClientFactory(subscriptionID, cred, nil)
 			if err != nil {
-				log.Fatal(err)
+				log.Println("[ERR] Cannot create network client factory: ", err)
+				w.Write([]byte("Cannot create network client factory"))
+				return
 			}
 			client := networkClientFactory.NewSecurityRulesClient()
 
 			_, err = addNsgRule(ctx, client, resourceGroup, resourceName, ruleName, "*", dstPort, "Tcp", ip, "*", int32(ruleNumber))
 
 		case "microsoft.storage/storageaccounts":
-			storageAccountsClient, err := armstorage.NewAccountsClient(subscriptionId, cred, nil)
+			var storageAccountsClient *armstorage.AccountsClient
+			storageAccountsClient, err = armstorage.NewAccountsClient(subscriptionID, cred, nil)
 
 			if err != nil {
-				log.Fatal(err)
+				w.Write([]byte("Cannot create storage account client"))
+				log.Println("[ERR] Cannot create storage account client: ", err)
+				return
 			}
 			_, err = addStorageRule(ctx, storageAccountsClient, resourceGroup, resourceName, ip)
 		default:
-			log.Fatal("[ERR] Invalid Resource Type")
+			err = fmt.Errorf("[ERR] Resource type %s is not supported", resourceType)
 		}
 		if err != nil {
-			log.Fatal(err)
+			log.Println("[ERR] Cannot whitelist IP: ", err)
+			w.Write([]byte("Failed to whitelist IP"))
 		} else {
 			log.Println("[INF] IP", ip, "whitelisted for", resid)
 			switch len(debugFlag) {
@@ -220,43 +242,44 @@ func whitelistipHandler(w http.ResponseWriter, r *http.Request, cred *azidentity
 
 // Creates a new rule in Storage Account Firewall
 func addStorageRule(ctx context.Context, storageAccountsClient *armstorage.AccountsClient, rgName, storageAccountName, ip string) (bool, error) {
-	var newIpRuleSet []*armstorage.IPRule
-	var newIps []*string
+	var newIPRuleSet []*armstorage.IPRule
+	var newIPs []*string
+	var ok bool
 
 	log.Println("[INF] Trying to modify", storageAccountName, "storage account")
-	var ok bool
+
 	// Check if rule already exists. If it does, appends the new source IP to the existing rule
 	storageAccount, err := storageAccountsClient.GetProperties(ctx, rgName, storageAccountName, &armstorage.AccountsClientGetPropertiesOptions{Expand: nil})
 
 	if err != nil {
-		log.Fatal("[ERR] Cannot get storage account properties: ", err)
+		return ok, fmt.Errorf("[ERR] Cannot get storage account properties: %v", err)
 	}
 
 	if storageAccount.Properties != nil && storageAccount.Properties.NetworkRuleSet != nil && storageAccount.Properties.NetworkRuleSet.IPRules != nil {
 		for _, ipRule := range storageAccount.Properties.NetworkRuleSet.IPRules {
-			newIps = append(newIps, ipRule.IPAddressOrRange)
+			newIPs = append(newIPs, ipRule.IPAddressOrRange)
 		}
 	}
 
 	// Check if IP is already whitelisted
-	for _, oldIp := range newIps {
-		if *oldIp == ip {
+	for _, oldIP := range newIPs {
+		if *oldIP == ip {
 			log.Println("[INF] IP", ip, "is already whitelisted")
 			return ok, nil
 		}
 	}
-	newIps = append(newIps, &ip)
+	newIPs = append(newIPs, &ip)
 
-	for _, ip := range newIps {
+	for _, ip := range newIPs {
 		newRule := &armstorage.IPRule{
 			Action:           &[]string{"Allow"}[0],
 			IPAddressOrRange: ip,
 		}
-		newIpRuleSet = append(newIpRuleSet, []*armstorage.IPRule{newRule}...)
+		newIPRuleSet = append(newIPRuleSet, []*armstorage.IPRule{newRule}...)
 
 	}
 
-	storageAccount.Properties.NetworkRuleSet.IPRules = newIpRuleSet
+	storageAccount.Properties.NetworkRuleSet.IPRules = newIPRuleSet
 
 	// Disable full access and limit to certain IPs
 	storageAccount.Properties.NetworkRuleSet.DefaultAction = &[]armstorage.DefaultAction{armstorage.DefaultActionDeny}[0]
@@ -277,11 +300,17 @@ func addStorageRule(ctx context.Context, storageAccountsClient *armstorage.Accou
 
 // Gets input value and transfer it to Azure Service Bus
 func messageHandler(w http.ResponseWriter, r *http.Request, cred *azidentity.ChainedTokenCredential) {
-	var message, queue string
+	var message, queue, replyTo, subject, contentType string
+	var err error
+
+	log.Println("[INF] Handling Service Bus messaging")
+
 	namespace, ok := os.LookupEnv("AZURE_SERVICEBUS_HOSTNAME")
 
 	if !ok {
-		log.Fatal("[ERR] AZURE_SERVICEBUS_HOSTNAME environment variable is not set")
+		log.Println("[ERR] AZURE_SERVICEBUS_HOSTNAME environment variable is not set")
+		w.Write([]byte("No Service Bus specified"))
+		return
 	}
 
 	// Checks URL and request type. If it is GET and request is for /message - draws default page
@@ -290,8 +319,11 @@ func messageHandler(w http.ResponseWriter, r *http.Request, cred *azidentity.Cha
 	switch r.Method {
 	case "POST":
 		// Reads user's input
-		message = r.FormValue("message")
-		queue = r.FormValue("queue")
+		message = sanitazeInput(r.FormValue("message"))
+		queue = sanitazeInput(r.FormValue("queue"))
+		replyTo = sanitazeInput(r.FormValue("replyTo"))
+		subject = sanitazeInput(r.FormValue("subject"))
+		contentType = sanitazeInput(r.FormValue("contentType"))
 	case "GET":
 		// Gets queue name from URL
 		queue = strings.TrimPrefix(r.URL.Path, "/message/")
@@ -339,6 +371,16 @@ func messageHandler(w http.ResponseWriter, r *http.Request, cred *azidentity.Cha
 				<input type="text" id="message" name="message" value="" required /><br>
 				<label for="queue">Queue:</label>
 				<input type="text" id="queue" value="" name="queue" required /><br>
+				<label for="replyTo">ReplyTo:</label>
+				<input type="text" id="replyTo" name="replyTo" value="" required><br>
+				<label for="subject">Subject:</label>
+				<input type="text" id="subject" name="subject" value="" required><br>
+				<label for="contentType">Content Type:</label>
+				<select id="contentType" name="contentType" required>
+					<option value="text/plain">Text</option>
+					<option value="application/json">JSON</option>
+					<option value="application/xml">XML</option>
+				</select><br>
 				<input type="submit" value="Submit">
 			</form>
 		</fieldset>
@@ -367,22 +409,28 @@ func messageHandler(w http.ResponseWriter, r *http.Request, cred *azidentity.Cha
 
 		defer receiver.Close(ctx)
 
-		messages, err := receiver.ReceiveMessages(ctx,
-			// The number of messages to receive. Note this is merely an upper
-			// bound. It is possible to get fewer message (or zero), depending
-			// on the contents of the remote queue or subscription and network
-			// conditions.
-			100,
-			nil,
-		)
+		ctxWithTimeout, cancel := context.WithTimeout(ctx, time.Second*5)
+		defer cancel()
 
+		messages, err := receiver.ReceiveMessages(ctxWithTimeout, 1, nil)
 		if err != nil {
-			log.Fatal(err)
+			if err == context.DeadlineExceeded {
+				// Handle timeout error
+				log.Println("[INF] No new messages. Timeout has been exceeded.")
+			} else {
+				log.Fatal(err)
+			}
 		}
 
-		for i, message := range messages {
-			receiver.CompleteMessage(ctx, message, nil)
-			w.Write([]byte(fmt.Sprintf("Message %d: %s\n", i, message.Body)))
+		switch len(messages) {
+		case 0:
+			w.Write([]byte("No new messages in queue"))
+		default:
+			for i, message := range messages {
+				// Complete the message. This will delete the message from the queue.
+				receiver.CompleteMessage(ctx, message, nil)
+				w.Write([]byte(fmt.Sprintf("Message %d: %s\nReplyTo: %s\nContent Type:%s\nSubject: %s\n", i, message.Body, *message.ReplyTo, *message.ContentType, *message.Subject)))
+			}
 		}
 	default:
 
@@ -396,7 +444,10 @@ func messageHandler(w http.ResponseWriter, r *http.Request, cred *azidentity.Cha
 		defer sender.Close(ctx)
 
 		sbMessage := &azservicebus.Message{
-			Body: []byte(message),
+			Body:        []byte(message),
+			ContentType: &contentType,
+			ReplyTo:     &replyTo,
+			Subject:     &subject,
 		}
 
 		// Send a single message to the topic
@@ -410,40 +461,40 @@ func messageHandler(w http.ResponseWriter, r *http.Request, cred *azidentity.Cha
 }
 
 // Creates a new allow inbound security rule in NSG
-func addNsgRule(ctx context.Context, securityRulesClient *armnetwork.SecurityRulesClient, rgName, nsgName, ruleName, dstIp, dstPort, protocol, srcIp, srcPort string, priority int32) (bool, error) {
+func addNsgRule(ctx context.Context, securityRulesClient *armnetwork.SecurityRulesClient, rgName, nsgName, ruleName, dstIP, dstPort, protocol, srcIP, srcPort string, priority int32) (bool, error) {
 	log.Println("[INF] Trying to modify", nsgName, "security rule", ruleName)
 	var ok bool
 	// Check if rule already exists. If it does, appends the new source IP to the existing rule
 	securityRule, _ := securityRulesClient.Get(ctx, rgName, nsgName, ruleName, nil)
 
 	//Check if security rule exists and has one or multiple source IP addresses
-	var newIps []*string
-	var newIp *string
+	var newIPs []*string
+	var newIP *string
 
 	if securityRule.Properties != nil && securityRule.Properties.SourceAddressPrefix != nil {
-		newIps = append(newIps, securityRule.Properties.SourceAddressPrefix)
+		newIPs = append(newIPs, securityRule.Properties.SourceAddressPrefix)
 	} else if securityRule.Properties != nil && securityRule.Properties.SourceAddressPrefixes != nil {
-		newIps = append(newIps, securityRule.Properties.SourceAddressPrefixes...)
+		newIPs = append(newIPs, securityRule.Properties.SourceAddressPrefixes...)
 	}
-	newIps = append(newIps, &srcIp)
+	newIPs = append(newIPs, &srcIP)
 
 	// removes duplicates from the slice
 	seen := make(map[string]bool)
 	j := 0
-	for _, v := range newIps {
+	for _, v := range newIPs {
 		if _, ok := seen[*v]; ok {
 			continue
 		}
 		seen[*v] = true
-		newIps[j] = v
+		newIPs[j] = v
 		j++
 	}
-	newIps = newIps[:j]
+	newIPs = newIPs[:j]
 
 	// If total number of source IP addresses is less than 2, then set source only to the new IP address
-	if len(newIps) <= 1 {
-		newIp = &srcIp
-		newIps = nil
+	if len(newIPs) <= 1 {
+		newIP = &srcIP
+		newIPs = nil
 	}
 
 	// Create or update the security rule
@@ -454,13 +505,13 @@ func addNsgRule(ctx context.Context, securityRulesClient *armnetwork.SecurityRul
 		armnetwork.SecurityRule{
 			Properties: &armnetwork.SecurityRulePropertiesFormat{
 				Access:                   &[]armnetwork.SecurityRuleAccess{armnetwork.SecurityRuleAccessAllow}[0],
-				DestinationAddressPrefix: &[]string{dstIp}[0],
+				DestinationAddressPrefix: &[]string{dstIP}[0],
 				DestinationPortRange:     &[]string{dstPort}[0],
 				Direction:                &[]armnetwork.SecurityRuleDirection{armnetwork.SecurityRuleDirectionInbound}[0],
 				Priority:                 &[]int32{priority}[0],
 				Protocol:                 &[]armnetwork.SecurityRuleProtocol{armnetwork.SecurityRuleProtocol(protocol)}[0],
-				SourceAddressPrefix:      newIp,
-				SourceAddressPrefixes:    newIps,
+				SourceAddressPrefix:      newIP,
+				SourceAddressPrefixes:    newIPs,
 				SourcePortRange:          &[]string{srcPort}[0],
 			},
 		},
@@ -502,7 +553,7 @@ func main() {
 	}
 	httpInvokerPort, exists := os.LookupEnv("HTTP_PORT")
 	if exists {
-		fmt.Println("HTTP_PORT: " + httpInvokerPort)
+		log.Println("HTTP_PORT: " + httpInvokerPort)
 	} else {
 		httpInvokerPort = "8080"
 	}
@@ -511,7 +562,7 @@ func main() {
 	mux.HandleFunc("/whitelistip", func(w http.ResponseWriter, r *http.Request) {
 		whitelistipHandler(w, r, login)
 	})
-	mux.HandleFunc("/myip", myIpHandler)
+	mux.HandleFunc("/myip", myIPHandler)
 	mux.HandleFunc("/message/", func(w http.ResponseWriter, r *http.Request) {
 		messageHandler(w, r, login)
 	})

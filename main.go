@@ -285,7 +285,6 @@ func (c *ARMClient) get(ctx context.Context, url string, out any) error {
 var ErrNotFound = errors.New("not found")
 
 // ---------- Resource ID parsing ----------
-
 type ResourceID struct {
 	Subscription  string
 	ResourceGroup string
@@ -308,7 +307,6 @@ func parseResourceID(id string) (ResourceID, error) {
 }
 
 // ---------- Dispatcher ----------
-
 func WhitelistByResourceID(ctx context.Context, arm *ARMClient, resourceID, ipCIDR string) error {
 	r, err := parseResourceID(resourceID)
 	if err != nil {
@@ -320,7 +318,8 @@ func WhitelistByResourceID(ctx context.Context, arm *ARMClient, resourceID, ipCI
 	case "microsoft.sql":
 		return handleSQL(ctx, arm, r, ipCIDR)
 	case "microsoft.storage":
-		return handleStorage(ctx, arm, r, ipCIDR)
+		_, err := handleStorage(ctx, arm, r, ipCIDR)
+		return err
 	case "microsoft.documentdb":
 		return handleCosmos(ctx, arm, r, ipCIDR)
 	case "microsoft.keyvault":
@@ -339,7 +338,6 @@ func WhitelistByResourceID(ctx context.Context, arm *ARMClient, resourceID, ipCI
 }
 
 // ---------- Handlers (merge-aware) ----------
-
 func handleWeb(ctx context.Context, arm *ARMClient, r ResourceID, ip string) error {
 	if len(r.TypeSegments) < 2 || r.TypeSegments[0] != "sites" {
 		return errors.New("unexpected Microsoft.Web type")
@@ -349,19 +347,22 @@ func handleWeb(ctx context.Context, arm *ARMClient, r ResourceID, ip string) err
 	if len(r.TypeSegments) >= 4 && r.TypeSegments[2] == "slots" {
 		slotPart = "/slots/" + r.TypeSegments[3]
 	}
+	// Use site config endpoint; ipSecurityRestrictions is part of the site config payload.
 	url := fmt.Sprintf(
-		"https://management.azure.com/subscriptions/%s/resourceGroups/%s/providers/Microsoft.Web/sites/%s%s/config/ipSecurityRestrictions/default?api-version=2023-12-01",
+		"https://management.azure.com/subscriptions/%s/resourceGroups/%s/providers/Microsoft.Web/sites/%s%s/config/web?api-version=2023-12-01",
 		r.Subscription, r.ResourceGroup, site, slotPart,
 	)
 
+	// Site config shape is large; we only care about ipSecurityRestrictions here.
 	var current struct {
 		Properties struct {
 			IpSecurityRestrictions []struct {
-				Name      string `json:"name"`
-				IPAddress string `json:"ipAddress"`
-				Action    string `json:"action"`
-				Priority  int    `json:"priority"`
-				Tag       string `json:"tag"`
+				Name        string `json:"name"`
+				IPAddress   string `json:"ipAddress"`
+				Action      string `json:"action"`
+				Priority    int    `json:"priority"`
+				Tag         string `json:"tag"`
+				Description string `json:"description,omitempty"`
 			} `json:"ipSecurityRestrictions"`
 		} `json:"properties"`
 	}
@@ -385,11 +386,12 @@ func handleWeb(ctx context.Context, arm *ARMClient, r ResourceID, ip string) err
 	}
 
 	current.Properties.IpSecurityRestrictions = append(current.Properties.IpSecurityRestrictions, struct {
-		Name      string `json:"name"`
-		IPAddress string `json:"ipAddress"`
-		Action    string `json:"action"`
-		Priority  int    `json:"priority"`
-		Tag       string `json:"tag"`
+		Name        string `json:"name"`
+		IPAddress   string `json:"ipAddress"`
+		Action      string `json:"action"`
+		Priority    int    `json:"priority"`
+		Tag         string `json:"tag"`
+		Description string `json:"description,omitempty"`
 	}{
 		Name: "allow-ip", IPAddress: ip, Action: "Allow", Priority: priority, Tag: "Default",
 	})
@@ -413,7 +415,7 @@ func handleSQL(ctx context.Context, arm *ARMClient, r ResourceID, ipCIDR string)
 	case "servers":
 		server := r.TypeSegments[1]
 		url := fmt.Sprintf(
-			"https://management.azure.com/subscriptions/%s/resourceGroups/%s/providers/Microsoft.Sql/servers/%s/firewallRules/%s?api-version=2023-08-01-preview",
+			"https://management.azure.com/subscriptions/%s/resourceGroups/%s/providers/Microsoft.Sql/servers/%s/firewallRules/%s?api-version=2023-08-01",
 			r.Subscription, r.ResourceGroup, server, ruleName,
 		)
 		var current struct {
@@ -439,7 +441,7 @@ func handleSQL(ctx context.Context, arm *ARMClient, r ResourceID, ipCIDR string)
 	case "managedinstances", "managedInstances":
 		mi := r.TypeSegments[1]
 		url := fmt.Sprintf(
-			"https://management.azure.com/subscriptions/%s/resourceGroups/%s/providers/Microsoft.Sql/managedInstances/%s/firewallRules/%s?api-version=2023-08-01-preview",
+			"https://management.azure.com/subscriptions/%s/resourceGroups/%s/providers/Microsoft.Sql/managedInstances/%s/firewallRules/%s?api-version=2021-11-01-preview",
 			r.Subscription, r.ResourceGroup, mi, ruleName,
 		)
 		var current struct {
@@ -466,16 +468,39 @@ func handleSQL(ctx context.Context, arm *ARMClient, r ResourceID, ipCIDR string)
 	}
 }
 
-func handleStorage(ctx context.Context, arm *ARMClient, r ResourceID, ip string) error {
-	if len(r.TypeSegments) < 2 || r.TypeSegments[0] != "storageAccounts" {
-		return errors.New("unexpected Microsoft.Storage type")
+const storageAPIVersion = "2025-06-01" // adjust if you target a different supported version
+
+func isValidIPOrCIDR(s string) bool {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return false
 	}
+	if ip := net.ParseIP(s); ip != nil {
+		return true
+	}
+	if _, _, err := net.ParseCIDR(s); err == nil {
+		return true
+	}
+	return false
+}
+
+func handleStorage(ctx context.Context, arm *ARMClient, r ResourceID, ip string) (bool, error) {
+	if len(r.TypeSegments) < 2 || r.TypeSegments[0] != "storageAccounts" {
+		return false, errors.New("unexpected Microsoft.Storage type")
+	}
+
+	ip = strings.TrimSpace(ip)
+	if !isValidIPOrCIDR(ip) {
+		return false, fmt.Errorf("invalid IP/CIDR: %q", ip)
+	}
+
 	account := r.TypeSegments[1]
 	url := fmt.Sprintf(
-		"https://management.azure.com/subscriptions/%s/resourceGroups/%s/providers/Microsoft.Storage/storageAccounts/%s?api-version=2023-05-01",
-		r.Subscription, r.ResourceGroup, account,
+		"https://management.azure.com/subscriptions/%s/resourceGroups/%s/providers/Microsoft.Storage/storageAccounts/%s?api-version=%s",
+		r.Subscription, r.ResourceGroup, account, storageAPIVersion,
 	)
 
+	// Fetch current network ACLs
 	var current struct {
 		Properties struct {
 			NetworkAcls struct {
@@ -485,34 +510,79 @@ func handleStorage(ctx context.Context, arm *ARMClient, r ResourceID, ip string)
 					Action string `json:"action"`
 					Value  string `json:"value"`
 				} `json:"ipRules"`
+				VirtualNetworkRules []struct {
+					ID string `json:"id"`
+				} `json:"virtualNetworkRules"`
+				ResourceAccessRules []struct {
+					ResourceID string `json:"resourceId"`
+					TenantID   string `json:"tenantId,omitempty"`
+				} `json:"resourceAccessRules"`
 			} `json:"networkAcls"`
 		} `json:"properties"`
 	}
 	if err := arm.get(ctx, url, &current); err != nil {
-		return err
+		return false, err
 	}
 
-	for _, r := range current.Properties.NetworkAcls.IpRules {
-		if r.Value == ip && strings.EqualFold(r.Action, "allow") {
-			return nil
+	// Already allowed?
+	for _, rule := range current.Properties.NetworkAcls.IpRules {
+		if strings.TrimSpace(rule.Value) == ip && strings.EqualFold(rule.Action, "allow") {
+			return false, nil
 		}
 	}
 
-	current.Properties.NetworkAcls.IpRules = append(current.Properties.NetworkAcls.IpRules, struct {
-		Action string `json:"action"`
-		Value  string `json:"value"`
-	}{Action: "Allow", Value: ip})
+	// Build ipRules using ipAddressOrRange (per guidance)
+	ipRules := make([]map[string]any, 0, len(current.Properties.NetworkAcls.IpRules)+1)
+	for _, rule := range current.Properties.NetworkAcls.IpRules {
+		ipRules = append(ipRules, map[string]any{
+			"action":           rule.Action,
+			"ipAddressOrRange": rule.Value,
+		})
+	}
+	ipRules = append(ipRules, map[string]any{
+		"action":           "Allow",
+		"ipAddressOrRange": ip,
+	})
+
+	// Required fields with safe defaults if missing
+	defaultAction := strings.TrimSpace(current.Properties.NetworkAcls.DefaultAction)
+	if defaultAction == "" {
+		defaultAction = "Deny" // or "Allow" per your policy
+	}
+	bypass := strings.TrimSpace(current.Properties.NetworkAcls.Bypass)
+	if bypass == "" {
+		bypass = "AzureServices" // or "None"
+	}
+
+	// Preserve VNet/resource access rules; send empty arrays if nil
+	vnetRules := any(current.Properties.NetworkAcls.VirtualNetworkRules)
+	if vnetRules == nil {
+		vnetRules = []any{}
+	}
+	resAccess := any(current.Properties.NetworkAcls.ResourceAccessRules)
+	if resAccess == nil {
+		resAccess = []any{}
+	}
+
+	networkAcls := map[string]any{
+		"defaultAction":       defaultAction,
+		"bypass":              bypass,
+		"ipRules":             ipRules,
+		"virtualNetworkRules": vnetRules,
+		"resourceAccessRules": resAccess,
+	}
 
 	payload := map[string]any{
 		"properties": map[string]any{
-			"networkAcls": map[string]any{
-				"defaultAction": current.Properties.NetworkAcls.DefaultAction,
-				"bypass":        current.Properties.NetworkAcls.Bypass,
-				"ipRules":       current.Properties.NetworkAcls.IpRules,
-			},
+			"networkAcls": networkAcls,
 		},
 	}
-	return arm.do(ctx, http.MethodPatch, url, payload)
+
+	// Use PATCH with full networkAcls block
+	if err := arm.do(ctx, http.MethodPatch, url, payload); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 func handleCosmos(ctx context.Context, arm *ARMClient, r ResourceID, ip string) error {

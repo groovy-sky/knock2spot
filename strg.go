@@ -17,6 +17,27 @@ import (
 	"github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/resources/armresources/v3"
 )
 
+var APIVersions = map[string]string{
+	"Microsoft.Storage/storageAccounts": "2023-01-01",
+}
+
+type ResourceValue struct {
+	ID         string                 `json:"id"`
+	Name       string                 `json:"name"`
+	Type       string                 `json:"type"`
+	Location   string                 `json:"location"`
+	Properties map[string]interface{} `json:"properties"`
+	Tags       map[string]string      `json:"tags"`
+}
+
+func ParseResourceValues(jsonData []byte) ([]ResourceValue, error) {
+	var values []ResourceValue
+	if err := json.Unmarshal(jsonData, &values); err != nil {
+		return nil, fmt.Errorf("failed to parse resource values: %w", err)
+	}
+	return values, nil
+}
+
 func CallResource(ctx context.Context, cred azcore.TokenCredential, resourceID, method, apiVersion string, body io.Reader) (int, map[string]any, error) {
 	method = strings.ToUpper(method)
 	subID, err := parseSubscriptionID(resourceID)
@@ -103,8 +124,8 @@ func main() {
 	if strings.TrimSpace(resourceID) == "" {
 		log.Fatal("missing env var: RESOURCE_ID")
 	}
-	apiVersion := "2023-01-01"
 
+	apiVersion := APIVersions["Microsoft.Storage/storageAccounts"]
 	status, body, err := CallResource(ctx, cred, resourceID, http.MethodGet, apiVersion, nil)
 	if err != nil {
 		log.Fatalf("call failed: %v", err)

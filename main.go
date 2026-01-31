@@ -14,6 +14,8 @@ import (
 	"github.com/groovy-sky/knock2spot/services"
 )
 
+var verbose = strings.TrimSpace(os.Getenv("VERBOSE")) != ""
+
 func main() {
 	ctx := context.Background()
 
@@ -22,21 +24,22 @@ func main() {
 		log.Fatalf("credential error: %v", err)
 	}
 
-	resourceID := os.Getenv("RESOURCE_ID")
-	if strings.TrimSpace(resourceID) == "" {
-		log.Fatal("missing env var: RESOURCE_ID")
+	resourceIDs := parseResourceIDs(os.Getenv("RESOURCE_IDS"))
+	if len(resourceIDs) == 0 {
+		log.Fatal("missing env var: RESOURCE_IDS")
 	}
 
-	// Auto-detect resource type from resource ID
-	resourceType, err := ParseResourceType(resourceID)
-	if err != nil {
-		log.Fatalf("failed to parse resource type: %v", err)
-	}
-
-	// Get the appropriate manager for this resource type
-	mgr, err := services.GetManager(resourceType)
-	if err != nil {
-		log.Fatalf("unsupported resource type %s: %v\nSupported types: %v", resourceType, err, services.SupportedResourceTypes())
+	managers := make(map[string]services.NetworkACLManager, len(resourceIDs))
+	for _, resourceID := range resourceIDs {
+		resourceType, err := ParseResourceType(resourceID)
+		if err != nil {
+			log.Fatalf("failed to parse resource type for %s: %v", resourceID, err)
+		}
+		mgr, err := services.GetManager(resourceType)
+		if err != nil {
+			log.Fatalf("unsupported resource type %s: %v\nSupported types: %v", resourceType, err, services.SupportedResourceTypes())
+		}
+		managers[resourceID] = mgr
 	}
 
 	port := strings.TrimSpace(os.Getenv("PORT"))
@@ -54,16 +57,21 @@ func main() {
 		}
 		ip, err := getRequesterIP(r)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
+			log.Printf("invalid requester IP: %v", err)
+			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
-		if err := EnsureIPAllowed(ctx, cred, resourceID, ip, mgr); err != nil {
-			log.Printf("failed to allow IP: %v", err)
-			http.Error(w, "failed to allow IP", http.StatusInternalServerError)
-			return
+		log.Printf("requester_ip=%s", ip)
+		for _, resourceID := range resourceIDs {
+			mgr := managers[resourceID]
+			result, err := EnsureIPAllowed(ctx, cred, resourceID, ip, mgr)
+			if err != nil {
+				log.Printf("failed to allow IP for %s: %v", resourceID, err)
+				continue
+			}
+			log.Printf("resource=%s result=%s", resourceID, result.String())
 		}
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("ok"))
+		w.WriteHeader(http.StatusNoContent)
 	})
 
 	http.HandleFunc("/close", func(w http.ResponseWriter, r *http.Request) {
@@ -73,16 +81,21 @@ func main() {
 		}
 		ip, err := getRequesterIP(r)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
+			log.Printf("invalid requester IP: %v", err)
+			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
-		if err := EnsureIPRemoved(ctx, cred, resourceID, ip, mgr); err != nil {
-			log.Printf("failed to remove IP: %v", err)
-			http.Error(w, "failed to remove IP", http.StatusInternalServerError)
-			return
+		log.Printf("requester_ip=%s", ip)
+		for _, resourceID := range resourceIDs {
+			mgr := managers[resourceID]
+			result, err := EnsureIPRemoved(ctx, cred, resourceID, ip, mgr)
+			if err != nil {
+				log.Printf("failed to remove IP for %s: %v", resourceID, err)
+				continue
+			}
+			log.Printf("resource=%s result=%s", resourceID, result.String())
 		}
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("ok"))
+		w.WriteHeader(http.StatusNoContent)
 	})
 
 	addr := ":" + port
@@ -136,4 +149,28 @@ func parseIPValue(raw string) (string, error) {
 		return "", &ipHeaderError{msg: "invalid IP address"}
 	}
 	return ip.String(), nil
+}
+
+func parseResourceIDs(raw string) []string {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return nil
+	}
+	parts := strings.Split(trimmed, ",")
+	ids := make([]string, 0, len(parts))
+	for _, part := range parts {
+		id := strings.TrimSpace(part)
+		if id == "" {
+			continue
+		}
+		ids = append(ids, id)
+	}
+	return ids
+}
+
+func logf(format string, args ...any) {
+	if !verbose {
+		return
+	}
+	log.Printf(format, args...)
 }

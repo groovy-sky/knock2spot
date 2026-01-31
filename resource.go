@@ -5,22 +5,16 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
-	"os"
 	"strings"
 	"time"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore/policy"
-	"github.com/Azure/azure-sdk-for-go/sdk/azidentity"
 	"github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/resources/armresources/v3"
 )
 
-var APIVersions = map[string]string{
-	"Microsoft.Storage/storageAccounts": "2023-01-01",
-}
-
+// ResourceValue represents an Azure resource from ARM API responses
 type ResourceValue struct {
 	ID         string                 `json:"id"`
 	Name       string                 `json:"name"`
@@ -30,6 +24,7 @@ type ResourceValue struct {
 	Tags       map[string]string      `json:"tags"`
 }
 
+// ParseResourceValues parses a JSON array of Azure resources
 func ParseResourceValues(jsonData []byte) ([]ResourceValue, error) {
 	var values []ResourceValue
 	if err := json.Unmarshal(jsonData, &values); err != nil {
@@ -38,9 +33,10 @@ func ParseResourceValues(jsonData []byte) ([]ResourceValue, error) {
 	return values, nil
 }
 
+// CallResource makes a REST call to the Azure Resource Manager API
 func CallResource(ctx context.Context, cred azcore.TokenCredential, resourceID, method, apiVersion string, body io.Reader) (int, map[string]any, error) {
 	method = strings.ToUpper(method)
-	subID, err := parseSubscriptionID(resourceID)
+	subID, err := ParseSubscriptionID(resourceID)
 	if err != nil {
 		return 0, nil, err
 	}
@@ -76,7 +72,7 @@ func CallResource(ctx context.Context, cred azcore.TokenCredential, resourceID, 
 	}
 	req.Header.Set("Authorization", "Bearer "+token.Token)
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("User-Agent", "arm-generic-call/1.0")
+	req.Header.Set("User-Agent", "knock2spot/1.0")
 
 	client := &http.Client{Timeout: 60 * time.Second}
 	res, err := client.Do(req)
@@ -99,7 +95,8 @@ func CallResource(ctx context.Context, cred azcore.TokenCredential, resourceID, 
 	return res.StatusCode, parsed, nil
 }
 
-func parseSubscriptionID(resourceID string) (string, error) {
+// ParseSubscriptionID extracts the subscription ID from a resource ID
+func ParseSubscriptionID(resourceID string) (string, error) {
 	const prefix = "/subscriptions/"
 	i := strings.Index(strings.ToLower(resourceID), prefix)
 	if i == -1 {
@@ -113,22 +110,24 @@ func parseSubscriptionID(resourceID string) (string, error) {
 	return resourceID[start : start+j], nil
 }
 
-func main() {
-	ctx := context.Background()
-	cred, err := azidentity.NewDefaultAzureCredential(nil)
-	if err != nil {
-		log.Fatalf("credential error: %v", err)
+// ParseResourceType extracts the resource type from a resource ID
+// e.g., "/subscriptions/.../providers/Microsoft.Storage/storageAccounts/myaccount"
+// returns "Microsoft.Storage/storageAccounts"
+func ParseResourceType(resourceID string) (string, error) {
+	const providers = "/providers/"
+	lower := strings.ToLower(resourceID)
+	i := strings.LastIndex(lower, providers)
+	if i == -1 {
+		return "", fmt.Errorf("resourceID missing %s", providers)
 	}
+	start := i + len(providers)
+	remaining := resourceID[start:]
 
-	resourceID := os.Getenv("STORAGE_RESOURCE_ID")
-	if strings.TrimSpace(resourceID) == "" {
-		log.Fatal("missing env var: RESOURCE_ID")
+	// Format: Microsoft.Storage/storageAccounts/resourceName
+	// We need to extract: Microsoft.Storage/storageAccounts
+	parts := strings.Split(remaining, "/")
+	if len(parts) < 2 {
+		return "", fmt.Errorf("invalid resource type format in resourceID")
 	}
-
-	apiVersion := APIVersions["Microsoft.Storage/storageAccounts"]
-	status, body, err := CallResource(ctx, cred, resourceID, http.MethodGet, apiVersion, nil)
-	if err != nil {
-		log.Fatalf("call failed: %v", err)
-	}
-	fmt.Printf("Status: %d\nBody: %+v\n", status, body)
+	return parts[0] + "/" + parts[1], nil
 }

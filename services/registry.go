@@ -12,6 +12,8 @@ type NetworkACLManager interface {
 	IsAccessRestricted(properties map[string]any) bool
 	GetAllowedIPs(properties map[string]any) []string
 	BuildPatchBody(currentProperties map[string]any, newIP string) map[string]any
+	BuildPatchBodyRemove(currentProperties map[string]any, removeIP string) map[string]any
+	BuildPatchBodyWithIPs(currentProperties map[string]any, allowedIPs []string) map[string]any
 }
 
 // managers maps lowercase resource types to their managers
@@ -36,4 +38,24 @@ func SupportedResourceTypes() []string {
 		types = append(types, t)
 	}
 	return types
+}
+
+func buildRemoveCandidates(removeIP string) map[string]struct{} {
+	candidates := map[string]struct{}{}
+	trimmed := strings.TrimSpace(removeIP)
+	if trimmed == "" {
+		return candidates
+	}
+	candidates[trimmed] = struct{}{}
+	if strings.Contains(trimmed, "/") {
+		base := strings.SplitN(trimmed, "/", 2)[0]
+		base = strings.TrimSpace(base)
+		if base != "" {
+			candidates[base] = struct{}{}
+			candidates[base+"/32"] = struct{}{}
+		}
+	} else {
+		candidates[trimmed+"/32"] = struct{}{}
+	}
+	return candidates
 }

@@ -18,8 +18,9 @@ type NetworkACLManager interface {
 
 // managers maps lowercase resource types to their managers
 var managers = map[string]NetworkACLManager{
-	"microsoft.storage/storageaccounts": StorageAccountManager{},
-	"microsoft.keyvault/vaults":         KeyVaultManager{},
+	"microsoft.storage/storageaccounts":      StorageAccountManager{},
+	"microsoft.keyvault/vaults":              KeyVaultManager{},
+	"microsoft.containerregistry/registries": ContainerRegistryManager{},
 }
 
 // GetManager returns the appropriate NetworkACLManager for a resource type

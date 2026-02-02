@@ -2,48 +2,160 @@
 
 ![](/logo.svg)
 
-## What is this?
+A lightweight Go web service that automatically whitelists your IP address on Azure PaaS firewalls.
 
-This project is a small website (written on Go), which can be used to seamesly whitelist your IP address on Azure resources. Currenty you can use it to:
-1. Reveal your IP address
-2. Whitelist your IP address on Azure Paas firewall (currently supports only Storage Account)
-3. Whitelist your IP address on Network Security Group for specified destination port
+## What does it do?
 
-## How to use it?
+When you're working remotely or from changing locations, constantly updating firewall rules for Azure resources is tedious. This service:
+- Detects your public IP address from incoming requests
+- Adds it to Azure resource firewall allow lists
+- Removes it when you're done
 
-You don't to compile this project, instead you can use [the Docker image](https://hub.docker.com/repository/docker/gr00vysky/knock2spot) or build it yourself using the [Dockerfile](/Dockerfile).
+**Supported Azure Resources:**
+- Storage Accounts
+- Key Vaults
+- Container Registries
 
-Easiest way how you can use this project is to deploy it to Azure App Service or Azure Container App. After deployment you'll need to assign managed identity to the app and grant permissions to the managed identity to the resources you want to whitelist your IP address on.
+## How it works
 
-After App is deployed you can use it by navigating to the root of the website. You'll see 3 forms:
-1. For NSG whitelisting. Requires NSG resource ID, destination port, rule priority and rule name.
-2. For PaaS whitelisting. Requires resource's ID.
-3. For IP address revealing.
+1. **You make a request** to `/open` endpoint
+2. **Service detects your IP** from request headers (`X-Forwarded-For` or `x-envoy-external-address`)
+3. **Checks the firewall** on configured Azure resources using Azure SDK
+4. **Adds your IP** to the allowed list if not already present
+5. **Returns 204** on success
 
-## How it works?
+When done, call `/close` to remove your IP from the firewall rules.
 
-This project uses [Azure SDK for Go](https://github.com/Azure/azure-sdk-for-go) to interact with Azure in a following way:
-1. It tries in different way to get Azure token - from MSI endpoint, environment variables or logged Azure CLI session.
+## Quick Start
 
-2. It parses requester IP address from request headers and tries to whitelist it on specified resources.
+### 1. Deploy to Azure
 
-3. Using token and requester's IP address it tries to append IP address to specified NSG rule or PaaS firewall.
+Deploy to Azure Container App or App Service using the [Docker image](https://hub.docker.com/repository/docker/gr00vysky/knock2spot):
 
-
-## How to run?
-
-Easiest way how you can run this project is to use [the Docker image](https://hub.docker.com/repository/docker/gr00vysky/knock2spot) or build it yourself using the [Dockerfile](/Dockerfile). 
-
-If you need TLS support you can run it on Azure Container App or Azure Web App for Containers. Open [Cloud Shell](https://shell.azure.com) and execute code below:
-
+```bash
+# Using Azure Container Apps
+az containerapp create \
+  --name knock2spot \
+  --resource-group myResourceGroup \
+  --image gr00vysky/knock2spot:latest \
+  --target-port 8080 \
+  --ingress external \
+  --env-vars \
+    RESOURCE_IDS="/subscriptions/xxx/resourceGroups/xxx/providers/Microsoft.Storage/storageAccounts/myaccount" \
+    AUTH_TOKEN="your-secret-token-here"
 ```
-wget https://raw.githubusercontent.com/groovy-sky/knock2spot/master/Template/script.sh
-chmod +x script.sh
-./script.sh
+
+### 2. Enable Managed Identity
+
+```bash
+# Enable system-assigned managed identity
+az containerapp identity assign --name knock2spot --resource-group myResourceGroup
+
+# Grant permissions to manage network ACLs on target resources
+az role assignment create \
+  --assignee <managed-identity-principal-id> \
+  --role "Contributor" \
+  --scope "/subscriptions/xxx/resourceGroups/xxx/providers/Microsoft.Storage/storageAccounts/myaccount"
 ```
 
-## To-Do
+### 3. Use the service
 
-- [ ] Add support for more Azure resources
-- [ ] Make default IPs
-- [ ] Make force rewrite flag
+```bash
+# Whitelist your IP
+curl -H "Authorization: your-secret-token-here" \
+  https://knock2spot.myapp.io/open
+
+# Remove your IP
+curl -H "Authorization: your-secret-token-here" \
+  https://knock2spot.myapp.io/close
+```
+
+## Configuration
+
+**Environment Variables:**
+
+| Variable | Required | Description | Default |
+|----------|----------|-------------|---------|
+| `RESOURCE_IDS` | Yes | Comma-separated Azure resource IDs to manage | - |
+| `AUTH_TOKEN` | No | Secret token for endpoint authentication | None (⚠️ unprotected) |
+| `HTTP_PORT` | No | HTTP listen port | 8080 |
+| `VERBOSE` | No | Enable detailed logging | false |
+| `PUBLIC_IP` | No | Fallback IP if headers unavailable | - |
+
+**Example with multiple resources:**
+```bash
+RESOURCE_IDS="/subscriptions/xxx/.../storageAccounts/storage1,/subscriptions/xxx/.../vaults/keyvault1"
+```
+
+## API Endpoints
+
+### `GET /`
+Returns service information
+
+### `POST /open`
+Adds your IP to firewall allow lists
+
+**Optional query parameters:**
+- `?provider=storage` - Only affect Storage Accounts
+- `?provider=keyvault` - Only affect Key Vaults
+- `?provider=containerregistry` - Only affect Container Registries
+
+**Authentication:** Required if `AUTH_TOKEN` is set
+
+**Headers:**
+```
+Authorization: YOUR_SECRET_TOKEN
+```
+
+**Response:**
+- `204 No Content` - Success
+- `401 Unauthorized` - Invalid/missing token
+- `400 Bad Request` - Invalid IP or provider
+- `500 Internal Server Error` - Azure API error
+
+### `POST /close`
+Removes your IP from firewall allow lists
+
+Same parameters and responses as `/open`.
+
+## Security Notes
+
+⚠️ **Always set `AUTH_TOKEN` in production** - without it, anyone can modify your firewall rules
+
+The service:
+- Uses Azure Managed Identity for Azure API authentication
+- Never stores or logs the `AUTH_TOKEN`
+- Only modifies network ACLs on explicitly configured resources
+- Logs all operations with timestamps and requester IPs
+
+## Local Development
+
+```bash
+# Build
+go build -o knock2spot
+
+# Run locally
+export RESOURCE_IDS="/subscriptions/.../resourceGroups/.../providers/Microsoft.Storage/storageAccounts/test"
+export AUTH_TOKEN="dev-token"
+export VERBOSE="true"
+
+# Authenticate with Azure CLI for local testing
+az login
+
+# Start service
+./knock2spot
+```
+
+## Troubleshooting
+
+**"missing x-envoy-external-address or X-Forwarded-For header"**
+- Set `PUBLIC_IP` environment variable with your IP address
+- Ensure your reverse proxy/load balancer passes `X-Forwarded-For`
+
+**"credential error"**
+- Enable managed identity on your Azure deployment
+- Or use `az login` for local development
+
+**"unsupported resource type"**
+- Verify resource ID format matches Azure conventions
+- Currently supports: Storage/Container Registry/Key Vault only

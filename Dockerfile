@@ -1,7 +1,9 @@
-FROM golang:1.21-alpine3.18 AS builder
-RUN apk add --no-cache git && go install github.com/groovy-sky/knock2spot@v1.1.7
+FROM docker.io/library/golang:1.24-alpine3.20 AS builder
+WORKDIR /src
+COPY . .
+RUN apk add --no-cache git && go build -o /go/bin/knock2spot .
 
-FROM alpine:3.18
+FROM docker.io/library/alpine:3.20
 ENV HTTP_PORT=8080
 EXPOSE ${HTTP_PORT}/tcp
 COPY --from=builder /go/bin/knock2spot /main
